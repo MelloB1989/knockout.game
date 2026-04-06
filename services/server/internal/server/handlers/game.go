@@ -28,6 +28,7 @@ const (
 	registerMove   events = "register_move"
 	getState       events = "get_state"
 	errorEvent     events = "error"
+	startGame      events = "start_game"
 )
 
 type outgoing struct {
@@ -36,16 +37,35 @@ type outgoing struct {
 	Error string                `json:"error,omitempty"`
 }
 
-var incoming struct {
-	Event events `json:"event"`
-	Data  any    `json:"data,omitempty"`
-	Error string `json:"error,omitempty"`
+type incomingMessage struct {
+	Event events          `json:"event"`
+	Data  json.RawMessage `json:"data,omitempty"`
 }
+
+type countdownPayload struct {
+	Round            int `json:"round"`
+	SecondsRemaining int `json:"seconds_remaining"`
+	TotalSeconds     int `json:"total_seconds"`
+}
+
+type roundMovesPayload struct {
+	Round int                             `json:"round"`
+	Moves map[string]entities.PenguinMove `json:"moves"`
+}
+
+type playerMovePayload struct {
+	PlayerId   string               `json:"player_id"`
+	PlayerMove entities.PenguinMove `json:"move"`
+}
+
+type moveAckPayload struct {
+	PlayerId string `json:"player_id"`
+}
+
+var runningGames sync.Map
 
 func WSHandler(c *websocket.Conn) {
 	playerId, playerSecret, gameId := middlewares.GetPlayerIdWS(c), middlewares.GetPlayerSecretWS(c), c.Params("gameId")
-
-	// TODO: Check secret
 
 	var writeMu sync.Mutex
 	writeJSON := func(v any) error {
@@ -118,8 +138,19 @@ func WSHandler(c *websocket.Conn) {
 			if err != nil {
 				return // Close the connection
 			}
-			switch event.Type {
 
+			var data any
+			if event.Type == repository.GameState && event.GameState != nil {
+				data = maskGameStateForPlayer(event.GameState, playerId)
+			} else if len(event.Data) > 0 {
+				data = event.Data
+			}
+
+			if err := writeJSON(outgoing{
+				Event: event.Type,
+				Data:  data,
+			}); err != nil {
+				return
 			}
 		}
 	}()
@@ -135,7 +166,8 @@ func WSHandler(c *websocket.Conn) {
 			return
 		}
 		c.SetReadDeadline(time.Now().Add(pongWait))
-		if err := json.Unmarshal(msgBytes, &incoming); err != nil {
+		var msg incomingMessage
+		if err := json.Unmarshal(msgBytes, &msg); err != nil {
 			writeJSON(outgoing{
 				Event: repository.ErrorEvent,
 				Error: err.Error(),
@@ -143,16 +175,47 @@ func WSHandler(c *websocket.Conn) {
 			continue
 		}
 
-		switch incoming.Event {
+		game, err = repository.LoadGame(gameId)
+		if err != nil || game.GameState == nil {
+			writeJSON(outgoing{
+				Event: repository.ErrorEvent,
+				Error: "failed to load game",
+			})
+			continue
+		}
+
+		if msg.Event != registerPlayer {
+			player, ok := game.GameState.Players[playerId]
+			if !ok || player.PlayerSecret != playerSecret {
+				writeJSON(outgoing{
+					Event: repository.ErrorEvent,
+					Error: "unauthorized",
+				})
+				continue
+			}
+		}
+
+		switch msg.Event {
 		case registerPlayer:
 			var player entities.Penguin
-			if err := json.Unmarshal(msgBytes, &player); err != nil {
+			if err := json.Unmarshal(msg.Data, &player); err != nil {
 				writeJSON(outgoing{
 					Event: repository.ErrorEvent,
 					Error: err.Error(),
 				})
 				continue
 			}
+			if playerId != "" {
+				player.Id = playerId
+			}
+			if existing, ok := game.GameState.Players[player.Id]; ok && existing.PlayerSecret != "" && existing.PlayerSecret != playerSecret {
+				writeJSON(outgoing{
+					Event: repository.ErrorEvent,
+					Error: "unauthorized",
+				})
+				continue
+			}
+			player.PlayerSecret = playerSecret
 			player.Mass = physics.NormalMass
 			if strings.HasPrefix(player.Id, "anonymous") {
 				player.Type = entities.AnonymousPlayer
@@ -163,6 +226,11 @@ func WSHandler(c *websocket.Conn) {
 			player.Velocity = 0
 			player.Direction = 0
 			player.Eliminated = 0
+
+			if game.GameState.HostId == "" {
+				game.GameState.HostId = player.Id
+			}
+
 			done, err := game.RegisterPlayer(player)
 			if err != nil {
 				writeJSON(outgoing{
@@ -171,16 +239,14 @@ func WSHandler(c *websocket.Conn) {
 				})
 				continue
 			}
-			player.PlayerSecret = "don't be sneaky bitch" //Avoid leaking secret
+
+			safePlayer := sanitizePlayer(player)
 			if done {
-				writeJSON(outgoing{
-					Event: repository.PlayerJoined,
-					Data:  player,
-				})
+				_ = game.PublishEvent(repository.PlayerJoined, safePlayer, nil)
 			}
 		case registerMove:
 			var playerMove entities.PenguinMove
-			if err := json.Unmarshal(msgBytes, &playerMove); err != nil {
+			if err := json.Unmarshal(msg.Data, &playerMove); err != nil {
 				writeJSON(outgoing{
 					Event: repository.ErrorEvent,
 					Error: err.Error(),
@@ -197,23 +263,209 @@ func WSHandler(c *websocket.Conn) {
 			}
 			if done {
 				writeJSON(outgoing{
-					Event: repository.PlayerMadeMove,
-					Data: struct {
-						PlayerId   string               `json:"player_id"`
-						PlayerMove entities.PenguinMove `json:"move"`
-					}{
-						PlayerId:   playerId,
-						PlayerMove: playerMove,
+					Event: repository.PlayerMoveAck,
+					Data: moveAckPayload{
+						PlayerId: playerId,
 					},
 				})
 			}
-		case getState:
-			state := game.GameState
-			//TODO: Mask player secrets. Mask player moves if player not eliminated
+		case startGame:
+			if game.GameState.HostId != "" && game.GameState.HostId != playerId {
+				writeJSON(outgoing{
+					Event: repository.ErrorEvent,
+					Error: "only host can start the game",
+				})
+				continue
+			}
+			if game.GameState.HostId == "" {
+				game.GameState.HostId = playerId
+				if _, err := game.UpdateGame(); err != nil {
+					writeJSON(outgoing{
+						Event: repository.ErrorEvent,
+						Error: err.Error(),
+					})
+					continue
+				}
+			}
+			if game.GameState.Started {
+				writeJSON(outgoing{
+					Event: repository.ErrorEvent,
+					Error: "game already started",
+				})
+				continue
+			}
+			startGameLoop(gameId)
 			writeJSON(outgoing{
 				Event: repository.GameState,
-				Data:  state,
+				Data:  maskGameStateForPlayer(game.GameState, playerId),
+			})
+		case getState:
+			writeJSON(outgoing{
+				Event: repository.GameState,
+				Data:  maskGameStateForPlayer(game.GameState, playerId),
 			})
 		}
 	}
+}
+
+func maskGameStateForPlayer(gs *physics.GameState, viewerId string) *physics.GameState {
+	if gs == nil {
+		return nil
+	}
+	masked := *gs
+	masked.Players = make(map[string]entities.Penguin, len(gs.Players))
+	for id, player := range gs.Players {
+		player.PlayerSecret = ""
+		masked.Players[id] = player
+	}
+
+	masked.CurrentMoves = make(map[string]entities.PenguinMove, len(gs.CurrentMoves))
+	viewer, ok := gs.Players[viewerId]
+	if ok && viewer.Eliminated == 0 {
+		if move, ok := gs.CurrentMoves[viewerId]; ok {
+			masked.CurrentMoves[viewerId] = move
+		}
+	} else {
+		for id, move := range gs.CurrentMoves {
+			masked.CurrentMoves[id] = move
+		}
+	}
+
+	return &masked
+}
+
+func sanitizePlayer(player entities.Penguin) entities.Penguin {
+	player.PlayerSecret = ""
+	return player
+}
+
+func copyMoves(moves map[string]entities.PenguinMove) map[string]entities.PenguinMove {
+	copied := make(map[string]entities.PenguinMove, len(moves))
+	for id, move := range moves {
+		copied[id] = move
+	}
+	return copied
+}
+
+func eliminatedPlayers(gs *physics.GameState, round int) []entities.Penguin {
+	if gs == nil || round <= 0 {
+		return nil
+	}
+	eliminated := make([]entities.Penguin, 0)
+	for _, player := range gs.Players {
+		if player.Eliminated == round {
+			eliminated = append(eliminated, player)
+		}
+	}
+	return eliminated
+}
+
+func aliveCount(gs *physics.GameState) int {
+	if gs == nil {
+		return 0
+	}
+	count := 0
+	for _, player := range gs.Players {
+		if player.Eliminated == 0 {
+			count++
+		}
+	}
+	return count
+}
+
+func findWinnerId(gs *physics.GameState) string {
+	if gs == nil {
+		return ""
+	}
+	for id, player := range gs.Players {
+		if player.Eliminated == 0 {
+			return id
+		}
+	}
+	return ""
+}
+
+func emitCountdown(game *repository.Game, round int, wait time.Duration) {
+	seconds := int(wait.Seconds())
+	if seconds <= 0 {
+		return
+	}
+	for i := seconds; i > 0; i-- {
+		_ = game.PublishEvent(repository.RoundStartCountdown, countdownPayload{
+			Round:            round,
+			SecondsRemaining: i,
+			TotalSeconds:     seconds,
+		}, nil)
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func startGameLoop(gameId string) {
+	if _, loaded := runningGames.LoadOrStore(gameId, struct{}{}); loaded {
+		return
+	}
+
+	go func() {
+		defer runningGames.Delete(gameId)
+		for {
+			game, err := repository.LoadGame(gameId)
+			if err != nil || game.GameState == nil {
+				return
+			}
+
+			if !game.GameState.Started {
+				game.GameState.Started = true
+				if game.GameState.CurrentRound <= 0 {
+					game.GameState.CurrentRound = 1
+				}
+				if game.GameState.WaitTime == 0 {
+					game.GameState.WaitTime = 8 * time.Second
+				}
+				if err := game.UpdateGame(); err == nil {
+					_ = game.PublishEvent(repository.GameState, nil, game.GameState)
+				}
+			}
+
+			if aliveCount(game.GameState) <= 1 {
+				winnerId := findWinnerId(game.GameState)
+				_ = game.PublishEvent(repository.GameEnded, struct {
+					WinnerId string `json:"winner_id,omitempty"`
+				}{WinnerId: winnerId}, game.GameState)
+				return
+			}
+
+			round := game.GameState.CurrentRound
+			emitCountdown(game, round, game.GameState.WaitTime)
+
+			game, err = repository.LoadGame(gameId)
+			if err != nil || game.GameState == nil {
+				return
+			}
+
+			round = game.GameState.CurrentRound
+			movesSnapshot := copyMoves(game.GameState.CurrentMoves)
+			game.GameState.PlayMoves()
+
+			if err := game.UpdateGame(); err != nil {
+				return
+			}
+
+			_ = game.PublishEvent(repository.PlayerMadeMove, roundMovesPayload{
+				Round: round,
+				Moves: movesSnapshot,
+			}, nil)
+
+			for _, player := range eliminatedPlayers(game.GameState, round) {
+				_ = game.PublishEvent(repository.PlayerEliminated, struct {
+					PlayerId string `json:"player_id"`
+					Round    int    `json:"round"`
+				}{
+					PlayerId: player.Id,
+					Round:    player.Eliminated,
+				}, nil)
+			}
+
+			_ = game.PublishEvent(repository.GameState, nil, game.GameState)
+		}
+	}()
 }

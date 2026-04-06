@@ -13,6 +13,8 @@ type GameState struct {
 	CurrentMoves    map[string]entities.PenguinMove `json:"current_moves"`
 	CurrentRound    int                             `json:"current_round"`
 	WaitTime        time.Duration                   `json:"wait_time"` // Time to wait between rounds to allow players to make moves
+	HostId          string                          `json:"host_id"`
+	Started         bool                            `json:"started"`
 	roundEliminated bool
 }
 
@@ -25,6 +27,8 @@ func CreateGameState(mapType string, l, w int) *GameState {
 			Width:  w,
 		},
 		CurrentMoves: make(map[string]entities.PenguinMove),
+		CurrentRound: 1,
+		WaitTime:     8 * time.Second,
 	}
 }
 

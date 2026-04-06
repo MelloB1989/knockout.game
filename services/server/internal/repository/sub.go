@@ -24,6 +24,7 @@ const (
 	PlayerEliminated      GameEvents = "player_eliminated"
 	GameEnded             GameEvents = "game_ended"
 	PlayerMadeMove        GameEvents = "player_made_move"        //When a player registers a move
+	PlayerMoveAck         GameEvents = "player_move_ack"         //Acknowledgement that a player submitted a move (no move data)
 	PlayersPositionUpdate GameEvents = "players_position_update" //When position of players (all) changes
 	RoundStartCountdown   GameEvents = "round_start_countdown"
 	GameState             GameEvents = "game_state"
