@@ -26,6 +26,7 @@ const (
 	PlayerMadeMove        GameEvents = "player_made_move"        //When a player registers a move
 	PlayersPositionUpdate GameEvents = "players_position_update" //When position of players (all) changes
 	RoundStartCountdown   GameEvents = "round_start_countdown"
+	GameState             GameEvents = "game_state"
 	ErrorEvent            GameEvents = "error"
 )
 

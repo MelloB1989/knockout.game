@@ -2,9 +2,12 @@ package handlers
 
 import (
 	"encoding/json"
+	"knockout/internal/models/entities"
+	"knockout/internal/physics"
 	"knockout/internal/repository"
 	"knockout/internal/server/middlewares"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +44,8 @@ var incoming struct {
 
 func WSHandler(c *websocket.Conn) {
 	playerId, playerSecret, gameId := middlewares.GetPlayerIdWS(c), middlewares.GetPlayerSecretWS(c), c.Params("gameId")
+
+	// TODO: Check secret
 
 	var writeMu sync.Mutex
 	writeJSON := func(v any) error {
@@ -139,7 +144,76 @@ func WSHandler(c *websocket.Conn) {
 		}
 
 		switch incoming.Event {
-
+		case registerPlayer:
+			var player entities.Penguin
+			if err := json.Unmarshal(msgBytes, &player); err != nil {
+				writeJSON(outgoing{
+					Event: repository.ErrorEvent,
+					Error: err.Error(),
+				})
+				continue
+			}
+			player.Mass = physics.NormalMass
+			if strings.HasPrefix(player.Id, "anonymous") {
+				player.Type = entities.AnonymousPlayer
+			} else {
+				player.Type = entities.RegisteredPlayer
+			}
+			player.Accel = 0
+			player.Velocity = 0
+			player.Direction = 0
+			player.Eliminated = 0
+			done, err := game.RegisterPlayer(player)
+			if err != nil {
+				writeJSON(outgoing{
+					Event: repository.ErrorEvent,
+					Error: err.Error(),
+				})
+				continue
+			}
+			player.PlayerSecret = "don't be sneaky bitch" //Avoid leaking secret
+			if done {
+				writeJSON(outgoing{
+					Event: repository.PlayerJoined,
+					Data:  player,
+				})
+			}
+		case registerMove:
+			var playerMove entities.PenguinMove
+			if err := json.Unmarshal(msgBytes, &playerMove); err != nil {
+				writeJSON(outgoing{
+					Event: repository.ErrorEvent,
+					Error: err.Error(),
+				})
+				continue
+			}
+			done, err := game.RegisterPlayerMove(playerId, playerMove)
+			if err != nil {
+				writeJSON(outgoing{
+					Event: repository.ErrorEvent,
+					Error: err.Error(),
+				})
+				continue
+			}
+			if done {
+				writeJSON(outgoing{
+					Event: repository.PlayerMadeMove,
+					Data: struct {
+						PlayerId   string               `json:"player_id"`
+						PlayerMove entities.PenguinMove `json:"move"`
+					}{
+						PlayerId:   playerId,
+						PlayerMove: playerMove,
+					},
+				})
+			}
+		case getState:
+			state := game.GameState
+			//TODO: Mask player secrets. Mask player moves if player not eliminated
+			writeJSON(outgoing{
+				Event: repository.GameState,
+				Data:  state,
+			})
 		}
 	}
 }

@@ -6,3 +6,8 @@ const (
 	collisionDistance = 2.0
 	powerScale        = 5.0
 )
+
+// Player constants
+const (
+	NormalMass = 1.0
+)
