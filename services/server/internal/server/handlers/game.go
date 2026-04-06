@@ -421,7 +421,7 @@ func startGameLoop(gameId string) {
 				if game.GameState.WaitTime == 0 {
 					game.GameState.WaitTime = 8 * time.Second
 				}
-				if err := game.UpdateGame(); err == nil {
+				if _, err := game.UpdateGame(); err == nil {
 					_ = game.PublishEvent(repository.GameState, nil, game.GameState)
 				}
 			}
@@ -446,7 +446,7 @@ func startGameLoop(gameId string) {
 			movesSnapshot := copyMoves(game.GameState.CurrentMoves)
 			game.GameState.PlayMoves()
 
-			if err := game.UpdateGame(); err != nil {
+			if _, err := game.UpdateGame(); err != nil {
 				return
 			}
 
