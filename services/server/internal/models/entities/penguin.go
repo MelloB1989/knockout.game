@@ -11,6 +11,11 @@ type PlayerSkins string
 
 const (
 	SkinDefault PlayerSkins = "default"
+	SkinIcy     PlayerSkins = "icy"
+	SkinLava    PlayerSkins = "lava"
+	SkinForest  PlayerSkins = "forest"
+	SkinNeon    PlayerSkins = "neon"
+	SkinShadow  PlayerSkins = "shadow"
 )
 
 type Position struct {

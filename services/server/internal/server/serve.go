@@ -21,5 +21,8 @@ func Serve() {
 	}))
 	v1 := app.Group("/v1")
 	gameserviceRoutes := v1.Group("/game")
+	gameserviceRoutes.Get("/maps", handlers.GetMapsHandler)
+	gameserviceRoutes.Get("/skins", handlers.GetSkinsHandler)
+	gameserviceRoutes.Post("/create", middlewares.IsPlayerVerified, handlers.CreateGameHandler)
 	gameserviceRoutes.Get("/ws/:gameId", middlewares.IsPlayerVerified, websocket.New(handlers.WSHandler))
 }
