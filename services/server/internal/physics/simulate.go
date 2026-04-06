@@ -2,18 +2,21 @@ package physics
 
 import (
 	"math"
+	"time"
 
-	"knockout/internal/entities"
+	"knockout/internal/models/entities"
 )
 
 type GameState struct {
-	Players         map[string]entities.Penguin `json:"players"`
-	Map             entities.Map                `json:"map"`
-	currentMoves    map[string]entities.PenguinMove
+	Players         map[string]entities.Penguin     `json:"players"`
+	Map             entities.Map                    `json:"map"`
+	CurrentMoves    map[string]entities.PenguinMove `json:"current_moves"`
+	CurrentRound    int                             `json:"current_round"`
+	WaitTime        time.Duration                   `json:"wait_time"` // Time to wait between rounds to allow players to make moves
 	roundEliminated bool
 }
 
-func CreateGame(mapType string, l, w int) *GameState {
+func CreateGameState(mapType string, l, w int) *GameState {
 	return &GameState{
 		Players: make(map[string]entities.Penguin),
 		Map: entities.Map{
@@ -21,18 +24,8 @@ func CreateGame(mapType string, l, w int) *GameState {
 			Length: l,
 			Width:  w,
 		},
-		currentMoves: make(map[string]entities.PenguinMove),
+		CurrentMoves: make(map[string]entities.PenguinMove),
 	}
-}
-
-func (gs *GameState) RegisterPlayer(p entities.Penguin) bool {
-	gs.Players[p.Id] = p
-	return true
-}
-
-func (gs *GameState) RegisterPlayerMove(playerId string, move entities.PenguinMove) bool {
-	gs.currentMoves[playerId] = move
-	return true
 }
 
 func (gs *GameState) PlayMoves() []entities.PenguinMove {
@@ -48,9 +41,10 @@ func (gs *GameState) PlayMoves() []entities.PenguinMove {
 
 func (gs *GameState) ApplyMoves() []entities.PenguinMove {
 	gs.roundEliminated = false
-	moves := make([]entities.PenguinMove, 0, len(gs.currentMoves))
+	moves := make([]entities.PenguinMove, 0, len(gs.CurrentMoves))
 
-	for playerId, move := range gs.currentMoves {
+	// Apply moves to players
+	for playerId, move := range gs.CurrentMoves {
 		moves = append(moves, move)
 		player, ok := gs.Players[playerId]
 		if !ok {
@@ -61,14 +55,15 @@ func (gs *GameState) ApplyMoves() []entities.PenguinMove {
 		gs.Players[playerId] = player
 	}
 
+	// Default acceleration for players who didn't move
 	for playerId, player := range gs.Players {
-		if _, ok := gs.currentMoves[playerId]; !ok {
+		if _, ok := gs.CurrentMoves[playerId]; !ok {
 			player.Accel = 0
 			gs.Players[playerId] = player
 		}
 	}
 
-	gs.currentMoves = make(map[string]entities.PenguinMove)
+	gs.CurrentMoves = make(map[string]entities.PenguinMove)
 
 	return moves
 }
@@ -84,7 +79,7 @@ func (gs *GameState) SimulateTick(dt float64) bool {
 	velocitiesZ := make(map[string]float64, len(gs.Players))
 
 	for playerId, player := range gs.Players {
-		if player.Eliminated {
+		if player.Eliminated > 0 {
 			continue
 		}
 
@@ -107,7 +102,7 @@ func (gs *GameState) SimulateTick(dt float64) bool {
 	}
 
 	for playerId, player := range gs.Players {
-		if player.Eliminated {
+		if player.Eliminated > 0 {
 			continue
 		}
 		vx, ok := velocitiesX[playerId]
@@ -126,7 +121,7 @@ func (gs *GameState) SimulateTick(dt float64) bool {
 			player.Position.X > float64(gs.Map.Length) ||
 			player.Position.Z < 0 ||
 			player.Position.Z > float64(gs.Map.Width) {
-			player.Eliminated = true
+			player.Eliminated = gs.CurrentRound
 			player.Velocity = 0
 			player.Accel = 0
 			velocitiesX[playerId] = 0
@@ -139,7 +134,7 @@ func (gs *GameState) SimulateTick(dt float64) bool {
 
 	playerIds := make([]string, 0, len(gs.Players))
 	for playerId, player := range gs.Players {
-		if player.Eliminated {
+		if player.Eliminated > 0 {
 			continue
 		}
 		playerIds = append(playerIds, playerId)
@@ -194,7 +189,7 @@ func (gs *GameState) SimulateTick(dt float64) bool {
 
 	allStopped := true
 	for playerId, player := range gs.Players {
-		if player.Eliminated {
+		if player.Eliminated > 0 {
 			continue
 		}
 		vx, ok := velocitiesX[playerId]
@@ -247,7 +242,7 @@ func (gs *GameState) shrinkMap() {
 	gs.Map.Width = newWidth
 
 	for playerId, player := range gs.Players {
-		if player.Eliminated {
+		if player.Eliminated > 0 {
 			continue
 		}
 		player.Position.X *= scaleX
@@ -273,6 +268,7 @@ func (gs *GameState) shrinkMap() {
 func (gs *GameState) EndRound() {
 	if gs.roundEliminated {
 		gs.shrinkMap()
+		gs.CurrentRound++
 		gs.roundEliminated = false
 	}
 }
@@ -291,7 +287,7 @@ func (gs *GameState) calcAccel(playerId string) float64 {
 		return 0
 	}
 
-	playerMove, ok := gs.currentMoves[playerId]
+	playerMove, ok := gs.CurrentMoves[playerId]
 	if !ok {
 		return 0
 	}

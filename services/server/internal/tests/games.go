@@ -1,16 +1,13 @@
 package tests
 
 import (
-	"knockout/internal/entities"
-	"knockout/internal/physics"
+	"knockout/internal/models/entities"
+	"knockout/internal/repository"
 	"knockout/internal/term"
-	"math/rand"
 	"time"
 )
 
 func RunTestGames() {
-	rand.Seed(time.Now().UnixNano())
-
 	runTestGame1()
 	time.Sleep(400 * time.Millisecond)
 	runTestGame2()
@@ -25,8 +22,11 @@ func RunTestGames() {
 }
 
 func runTestGame1() {
-	gs := physics.CreateGame("demo", 40, 20)
-	gs.Map.Friction = 0.25
+	gs, err := repository.CreateGame("demo", 40, 20)
+	if err != nil {
+		return
+	}
+	gs.GameState.Map.Friction = 0.25
 
 	gs.RegisterPlayer(entities.Penguin{
 		Id:       "P1",
@@ -50,8 +50,11 @@ func runTestGame1() {
 }
 
 func runTestGame2() {
-	gs := physics.CreateGame("demo", 30, 15)
-	gs.Map.Friction = 0.3
+	gs, err := repository.CreateGame("demo", 30, 15)
+	if err != nil {
+		return
+	}
+	gs.GameState.Map.Friction = 0.3
 
 	gs.RegisterPlayer(entities.Penguin{
 		Id:       "A",
@@ -85,8 +88,11 @@ func runTestGame2() {
 }
 
 func runTestGame3() {
-	gs := physics.CreateGame("demo", 50, 20)
-	gs.Map.Friction = 0.22
+	gs, err := repository.CreateGame("demo", 50, 20)
+	if err != nil {
+		return
+	}
+	gs.GameState.Map.Friction = 0.22
 
 	term.RegisterRandomPlayers(gs, "R", 8, 10)
 	term.RegisterRandomMoves(gs, 5)
@@ -95,8 +101,11 @@ func runTestGame3() {
 }
 
 func runTestGame4() {
-	gs := physics.CreateGame("demo", 60, 25)
-	gs.Map.Friction = 0.3
+	gs, err := repository.CreateGame("demo", 60, 25)
+	if err != nil {
+		return
+	}
+	gs.GameState.Map.Friction = 0.3
 
 	term.RegisterRandomPlayers(gs, "S", 12, 9)
 	term.RegisterRandomMoves(gs, 4)
@@ -105,8 +114,11 @@ func runTestGame4() {
 }
 
 func runTournamentGame1() {
-	gs := physics.CreateGame("tournament", 50, 20)
-	gs.Map.Friction = 0.25
+	gs, err := repository.CreateGame("tournament", 50, 20)
+	if err != nil {
+		return
+	}
+	gs.GameState.Map.Friction = 0.25
 
 	term.RegisterRandomPlayers(gs, "T", 10, 10)
 
@@ -114,8 +126,11 @@ func runTournamentGame1() {
 }
 
 func runTournamentGame2() {
-	gs := physics.CreateGame("tournament", 70, 28)
-	gs.Map.Friction = 0.28
+	gs, err := repository.CreateGame("tournament", 70, 28)
+	if err != nil {
+		return
+	}
+	gs.GameState.Map.Friction = 0.28
 
 	term.RegisterRandomPlayers(gs, "U", 14, 9)
 

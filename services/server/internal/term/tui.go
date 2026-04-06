@@ -2,8 +2,9 @@ package term
 
 import (
 	"fmt"
-	"knockout/internal/entities"
+	"knockout/internal/models/entities"
 	"knockout/internal/physics"
+	"knockout/internal/repository"
 	"math"
 	"math/rand"
 	"sort"
@@ -11,15 +12,15 @@ import (
 )
 
 const (
-	dt         = 0.12
+	dt         = 0.16
 	frameDelay = 40 * time.Millisecond
 )
 
-func RegisterRandomPlayers(gs *physics.GameState, prefix string, count int, accel float64) {
-	for i := 0; i < count; i++ {
+func RegisterRandomPlayers(gs *repository.Game, prefix string, count int, accel float64) {
+	for i := range count {
 		id := fmt.Sprintf("%s%d", prefix, i+1)
-		x := float64(rand.Intn(gs.Map.Length-2) + 1)
-		z := float64(rand.Intn(gs.Map.Width-2) + 1)
+		x := float64(rand.Intn(gs.GameState.Map.Length-2) + 1)
+		z := float64(rand.Intn(gs.GameState.Map.Width-2) + 1)
 		gs.RegisterPlayer(entities.Penguin{
 			Id:       id,
 			Type:     "random",
@@ -30,9 +31,9 @@ func RegisterRandomPlayers(gs *physics.GameState, prefix string, count int, acce
 	}
 }
 
-func RegisterRandomMoves(gs *physics.GameState, power int) {
-	for id, player := range gs.Players {
-		if player.Eliminated {
+func RegisterRandomMoves(gs *repository.Game, power int) {
+	for id, player := range gs.GameState.Players {
+		if player.Eliminated > 0 {
 			continue
 		}
 		dir := rand.Float64() * 360
@@ -40,53 +41,53 @@ func RegisterRandomMoves(gs *physics.GameState, power int) {
 	}
 }
 
-func aliveCount(gs *physics.GameState) int {
+func aliveCount(gs *repository.Game) int {
 	count := 0
-	for _, player := range gs.Players {
-		if !player.Eliminated {
+	for _, player := range gs.GameState.Players {
+		if player.Eliminated == 0 {
 			count++
 		}
 	}
 	return count
 }
 
-func AnimateTournament(title string, gs *physics.GameState, power int) {
+func AnimateTournament(title string, gs *repository.Game, power int) {
 	round := 1
-	playerOrder := sortedPlayers(gs)
+	playerOrder := sortedPlayers(gs.GameState)
 	symbols := buildSymbols(playerOrder)
 	for aliveCount(gs) > 1 {
 		RegisterRandomMoves(gs, power)
-		gs.ApplyMoves()
+		gs.GameState.ApplyMoves()
 
 		frame := 0
 		for {
-			renderFrame(fmt.Sprintf("%s | round %d", title, round), frame, gs, playerOrder, symbols)
-			stopped := gs.SimulateTick(dt)
+			renderFrame(fmt.Sprintf("%s | round %d", title, round), frame, gs.GameState, playerOrder, symbols)
+			stopped := gs.GameState.SimulateTick(dt)
 			if stopped {
-				renderFrame(fmt.Sprintf("%s | round %d", title, round), frame+1, gs, playerOrder, symbols)
+				renderFrame(fmt.Sprintf("%s | round %d", title, round), frame+1, gs.GameState, playerOrder, symbols)
 				break
 			}
 			frame++
 			time.Sleep(frameDelay)
 		}
-		gs.EndRound()
+		gs.GameState.EndRound()
 		round++
 	}
 }
 
-func AnimateGame(title string, gs *physics.GameState) {
-	gs.ApplyMoves()
+func AnimateGame(title string, gs *repository.Game) {
+	gs.GameState.ApplyMoves()
 
-	playerOrder := sortedPlayers(gs)
+	playerOrder := sortedPlayers(gs.GameState)
 	symbols := buildSymbols(playerOrder)
 
 	frame := 0
 	for {
-		renderFrame(title, frame, gs, playerOrder, symbols)
-		stopped := gs.SimulateTick(dt)
+		renderFrame(title, frame, gs.GameState, playerOrder, symbols)
+		stopped := gs.GameState.SimulateTick(dt)
 		if stopped {
-			renderFrame(title, frame+1, gs, playerOrder, symbols)
-			gs.EndRound()
+			renderFrame(title, frame+1, gs.GameState, playerOrder, symbols)
+			gs.GameState.EndRound()
 			break
 		}
 		frame++
@@ -137,7 +138,7 @@ func renderFrame(title string, frame int, gs *physics.GameState, order []string,
 
 	for _, id := range order {
 		p := gs.Players[id]
-		if p.Eliminated {
+		if p.Eliminated > 0 {
 			continue
 		}
 		x := int(math.Round(p.Position.X))
@@ -156,7 +157,7 @@ func renderFrame(title string, frame int, gs *physics.GameState, order []string,
 	for _, id := range order {
 		p := gs.Players[id]
 		status := "alive"
-		if p.Eliminated {
+		if p.Eliminated > 0 {
 			status = "eliminated"
 		}
 		fmt.Printf(" %c %s pos(%.2f,%.2f) vel=%.3f dir=%.1f %s\n",
