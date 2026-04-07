@@ -36,3 +36,6 @@ yarn-error.log*
 # Misc
 .DS_Store
 *.pem
+threejs-skills
+ui-refer
+.playwright-mcp

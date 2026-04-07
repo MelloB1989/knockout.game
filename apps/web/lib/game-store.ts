@@ -28,6 +28,10 @@ interface GameStore {
   moveSubmitted: boolean;
   roundMoves: Record<string, PenguinMove> | null;
 
+  // Aiming state (player direction in degrees during countdown)
+  aimDirection: number;
+  aimPower: number;
+
   // Elimination & end
   eliminatedThisRound: string[];
   winnerId: string | null;
@@ -50,6 +54,8 @@ interface GameStore {
   handlePositionUpdate: (gs: GameState) => void;
 
   setPendingMove: (move: PenguinMove | null) => void;
+  setAimDirection: (deg: number) => void;
+  setAimPower: (power: number) => void;
   submitMove: () => PenguinMove | null;
 
   updateAnimatedPositions: (positions: Record<string, { x: number; z: number }>) => void;
@@ -68,6 +74,8 @@ const initialState = {
   pendingMove: null,
   moveSubmitted: false,
   roundMoves: null,
+  aimDirection: 0,
+  aimPower: 6,
   eliminatedThisRound: [],
   winnerId: null,
   animatedPositions: {},
@@ -101,8 +109,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
       currentRound: payload.round,
       phase: "countdown",
       moveSubmitted: false,
+      pendingMove: null,
       roundMoves: null,
       eliminatedThisRound: [],
+      aimDirection: 0,
+      aimPower: 6,
     });
   },
 
@@ -155,11 +166,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   setPendingMove: (move) => set({ pendingMove: move }),
+  setAimDirection: (deg) => set({ aimDirection: deg }),
+  setAimPower: (power) => set({ aimPower: power }),
 
   submitMove: () => {
-    const move = get().pendingMove;
-    if (!move) return null;
-    set({ moveSubmitted: true });
+    const { aimDirection, aimPower } = get();
+    const move: PenguinMove = { direction: aimDirection, power: aimPower };
+    set({ pendingMove: move, moveSubmitted: true });
     return move;
   },
 

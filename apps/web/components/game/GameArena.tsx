@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, Suspense } from "react";
+import { useRef, Suspense, useMemo } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
@@ -9,19 +9,48 @@ import { skinToGlb, mapToEnvironmentGlb } from "@/lib/constants";
 import type { Penguin } from "@/lib/types";
 
 /* ------------------------------------------------------------------ */
-/*  Environment model — loads the per-map GLB scenery                 */
+/*  Environment model                                                 */
 /* ------------------------------------------------------------------ */
-function EnvironmentModel({ mapType }: { mapType: string }) {
+function EnvironmentModel({ mapType, center }: { mapType: string; center: [number, number, number] }) {
   const glbPath = mapToEnvironmentGlb(mapType);
   const { scene } = useGLTF(glbPath);
-
   return (
     <primitive
       object={scene.clone()}
-      scale={[1, 1, 1]}
-      position={[0, 0, 0]}
+      position={center}
       receiveShadow
     />
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Direction Arrow — 3D arrow in front of penguin                    */
+/* ------------------------------------------------------------------ */
+function DirectionArrow({ direction, color, visible }: { direction: number; color: string; visible: boolean }) {
+  const groupRef = useRef<THREE.Group>(null!);
+
+  useFrame(() => {
+    if (!groupRef.current) return;
+    groupRef.current.visible = visible;
+    if (visible) {
+      const rad = (direction * Math.PI) / 180;
+      groupRef.current.rotation.y = -rad + Math.PI / 2;
+    }
+  });
+
+  return (
+    <group ref={groupRef} position={[0, 2.2, 0]}>
+      {/* Arrow shaft */}
+      <mesh position={[0, 0, -1.2]}>
+        <boxGeometry args={[0.2, 0.2, 1.6]} />
+        <meshBasicMaterial color={color} transparent opacity={0.9} />
+      </mesh>
+      {/* Arrow head (cone) */}
+      <mesh position={[0, 0, -2.2]} rotation={[Math.PI / 2, 0, 0]}>
+        <coneGeometry args={[0.4, 0.8, 8]} />
+        <meshBasicMaterial color={color} transparent opacity={0.9} />
+      </mesh>
+    </group>
   );
 }
 
@@ -31,34 +60,41 @@ function EnvironmentModel({ mapType }: { mapType: string }) {
 interface PenguinModelProps {
   penguin: Penguin;
   isCurrentPlayer: boolean;
+  mapCenter: { x: number; z: number };
 }
 
-function PenguinModel({ penguin, isCurrentPlayer }: PenguinModelProps) {
+function PenguinModel({ penguin, isCurrentPlayer, mapCenter }: PenguinModelProps) {
   const groupRef = useRef<THREE.Group>(null!);
   const glbPath = skinToGlb(penguin.skin);
   const { scene } = useGLTF(glbPath);
 
-  const targetPos = useRef(new THREE.Vector3(penguin.position.x, 0.5, penguin.position.z));
-  const currentPos = useRef(new THREE.Vector3(penguin.position.x, 0.5, penguin.position.z));
+  const phase = useGameStore((s) => s.phase);
+  const aimDirection = useGameStore((s) => s.aimDirection);
+  const moveSubmitted = useGameStore((s) => s.moveSubmitted);
+
+  // Center-relative position
+  const cx = penguin.position.x - mapCenter.x;
+  const cz = penguin.position.z - mapCenter.z;
+
+  const targetPos = useRef(new THREE.Vector3(cx, 0.5, cz));
+  const currentPos = useRef(new THREE.Vector3(cx, 0.5, cz));
 
   // Update target when position changes
-  targetPos.current.set(penguin.position.x, penguin.eliminated > 0 ? -3 : 0.5, penguin.position.z);
+  targetPos.current.set(cx, penguin.eliminated > 0 ? -3 : 0.5, cz);
 
   useFrame((_, delta) => {
     if (!groupRef.current) return;
 
-    // Smooth interpolation
-    const speed = 6;
+    const speed = 8;
     currentPos.current.lerp(targetPos.current, 1 - Math.exp(-speed * delta));
     groupRef.current.position.copy(currentPos.current);
 
-    // Rotate penguin to face direction
-    if (penguin.velocity > 0.01) {
-      const rad = (penguin.direction * Math.PI) / 180;
-      const targetRotY = -rad + Math.PI / 2;
-      groupRef.current.rotation.y +=
-        (targetRotY - groupRef.current.rotation.y) * (1 - Math.exp(-8 * delta));
-    }
+    // Rotate penguin to face its direction
+    const dir = isCurrentPlayer && phase === "countdown" ? aimDirection : penguin.direction;
+    const rad = (dir * Math.PI) / 180;
+    const targetRotY = -rad + Math.PI / 2;
+    groupRef.current.rotation.y +=
+      (targetRotY - groupRef.current.rotation.y) * (1 - Math.exp(-10 * delta));
 
     // Bounce effect when moving
     if (penguin.velocity > 0.1) {
@@ -67,24 +103,25 @@ function PenguinModel({ penguin, isCurrentPlayer }: PenguinModelProps) {
     }
   });
 
+  // Determine arrow visibility and direction
+  const showArrow = phase === "countdown" || phase === "animating";
+  const arrowDir = isCurrentPlayer ? aimDirection : penguin.direction;
+  const arrowColor = isCurrentPlayer ? "#ffcc00" : "#ff4444";
+
   return (
-    <group ref={groupRef} position={[penguin.position.x, 0.5, penguin.position.z]}>
+    <group ref={groupRef} position={[cx, 0.5, cz]}>
       <primitive
         object={scene.clone()}
         scale={[1.2, 1.2, 1.2]}
         castShadow
         receiveShadow
       />
-      {/* Player name tag */}
-      {penguin.eliminated === 0 && (
-        <sprite position={[0, 2.5, 0]} scale={[2, 0.5, 1]}>
-          <spriteMaterial
-            color={isCurrentPlayer ? "#22d3ee" : "#ffffff"}
-            opacity={0.8}
-            transparent
-          />
-        </sprite>
-      )}
+      {/* Direction arrow */}
+      <DirectionArrow
+        direction={arrowDir}
+        color={arrowColor}
+        visible={showArrow && penguin.eliminated === 0}
+      />
       {/* Glow ring for current player */}
       {isCurrentPlayer && penguin.eliminated === 0 && (
         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.05, 0]}>
@@ -107,17 +144,13 @@ interface PlatformProps {
 
 function Platform({ length, width, mapType }: PlatformProps) {
   const meshRef = useRef<THREE.Mesh>(null!);
-  const scaleRef = useRef(new THREE.Vector3(length, 0.5, width));
-  const posRef = useRef(new THREE.Vector3(length / 2, -0.25, width / 2));
+  const targetScale = useRef(new THREE.Vector3(length, 0.5, width));
 
-  // Update targets
-  scaleRef.current.set(length, 0.5, width);
-  posRef.current.set(length / 2, -0.25, width / 2);
+  targetScale.current.set(length, 0.5, width);
 
   useFrame((_, delta) => {
     if (!meshRef.current) return;
-    meshRef.current.scale.lerp(scaleRef.current, 1 - Math.exp(-3 * delta));
-    meshRef.current.position.lerp(posRef.current, 1 - Math.exp(-3 * delta));
+    meshRef.current.scale.lerp(targetScale.current, 1 - Math.exp(-3 * delta));
   });
 
   const platformColor = {
@@ -137,35 +170,31 @@ function Platform({ length, width, mapType }: PlatformProps) {
   }[mapType] || "#80deea";
 
   return (
-    <group>
-      {/* Main platform */}
-      <mesh
-        ref={meshRef}
-        position={[length / 2, -0.25, width / 2]}
-        receiveShadow
-      >
+    <group position={[0, 0, 0]}>
+      {/* Main platform — centered at origin */}
+      <mesh ref={meshRef} position={[0, -0.25, 0]} receiveShadow>
         <boxGeometry args={[1, 1, 1]} />
         <meshStandardMaterial color={platformColor} roughness={0.4} metalness={0.1} />
       </mesh>
-      {/* Glowing edge lines */}
-      <mesh position={[length / 2, 0.02, width / 2]}>
+      {/* Glowing edge overlay */}
+      <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <planeGeometry args={[length + 0.2, width + 0.2]} />
         <meshBasicMaterial color={edgeColor} transparent opacity={0.15} side={THREE.DoubleSide} />
       </mesh>
-      {/* Grid pattern on platform */}
+      {/* Grid */}
       <gridHelper
         args={[Math.max(length, width), Math.max(length, width), 0x333333, 0x222222]}
-        position={[length / 2, 0.03, width / 2]}
+        position={[0, 0.03, 0]}
       />
-      {/* Danger zone edge glow */}
-      {[0, length].map((x) => (
-        <mesh key={`x${x}`} position={[x, 0.1, width / 2]}>
+      {/* Edge glow lines */}
+      {[-length / 2, length / 2].map((x) => (
+        <mesh key={`x${x}`} position={[x, 0.1, 0]}>
           <boxGeometry args={[0.1, 0.3, width]} />
           <meshBasicMaterial color={edgeColor} transparent opacity={0.3} />
         </mesh>
       ))}
-      {[0, width].map((z) => (
-        <mesh key={`z${z}`} position={[length / 2, 0.1, z]}>
+      {[-width / 2, width / 2].map((z) => (
+        <mesh key={`z${z}`} position={[0, 0.1, z]}>
           <boxGeometry args={[length, 0.3, 0.1]} />
           <meshBasicMaterial color={edgeColor} transparent opacity={0.3} />
         </mesh>
@@ -175,29 +204,49 @@ function Platform({ length, width, mapType }: PlatformProps) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Follow camera                                                     */
+/*  Third-person camera — behind the player's penguin                 */
 /* ------------------------------------------------------------------ */
-function FollowCamera({ playerId }: { playerId: string }) {
-  const offset = useRef(new THREE.Vector3(0, 18, 15));
-  const currentPos = useRef(new THREE.Vector3());
-  const lookTarget = useRef(new THREE.Vector3());
+function ThirdPersonCamera({ playerId, mapCenter }: { playerId: string; mapCenter: { x: number; z: number } }) {
+  const currentCamPos = useRef(new THREE.Vector3(0, 8, 12));
+  const currentLookAt = useRef(new THREE.Vector3());
 
   useFrame(({ camera }, delta) => {
     const gs = useGameStore.getState().gameState;
+    const phase = useGameStore.getState().phase;
+    const aimDirection = useGameStore.getState().aimDirection;
     if (!gs) return;
 
     const player = gs.players[playerId];
-    if (!player) {
-      lookTarget.current.set(gs.map.length / 2, 0, gs.map.width / 2);
+
+    // Player's center-relative position
+    let px: number, pz: number;
+    if (!player || player.eliminated > 0) {
+      px = 0;
+      pz = 0;
     } else {
-      lookTarget.current.set(player.position.x, 0, player.position.z);
+      px = player.position.x - mapCenter.x;
+      pz = player.position.z - mapCenter.z;
     }
 
-    const desired = lookTarget.current.clone().add(offset.current);
-    currentPos.current.lerp(desired, 1 - Math.exp(-3 * delta));
+    const lookTarget = new THREE.Vector3(px, 1, pz);
 
-    camera.position.copy(currentPos.current);
-    camera.lookAt(lookTarget.current);
+    // Camera behind the player based on their facing direction
+    const dir = phase === "countdown" ? aimDirection : (player?.direction ?? 0);
+    const rad = (dir * Math.PI) / 180;
+
+    // Camera offset: behind and above the penguin
+    const camDist = 10;
+    const camHeight = 6;
+    const camX = px - Math.cos(rad) * camDist;
+    const camZ = pz - Math.sin(rad) * camDist;
+    const desiredPos = new THREE.Vector3(camX, camHeight, camZ);
+
+    const smoothSpeed = phase === "countdown" ? 5 : 3;
+    currentCamPos.current.lerp(desiredPos, 1 - Math.exp(-smoothSpeed * delta));
+    currentLookAt.current.lerp(lookTarget, 1 - Math.exp(-smoothSpeed * delta));
+
+    camera.position.copy(currentCamPos.current);
+    camera.lookAt(currentLookAt.current);
   });
 
   return null;
@@ -216,12 +265,16 @@ export default function GameArena({ playerId }: GameArenaProps) {
   if (!gameState) return null;
 
   const players = Object.values(gameState.players);
+  const mapCenter = useMemo(() => ({
+    x: gameState.map.length / 2,
+    z: gameState.map.width / 2,
+  }), [gameState.map.length, gameState.map.width]);
 
   return (
     <div style={{ position: "absolute", top: 0, left: 0, width: "100vw", height: "100vh" }}>
       <Canvas
         shadows={{ type: THREE.PCFShadowMap }}
-        camera={{ position: [20, 18, 25], fov: 50, near: 0.1, far: 200 }}
+        camera={{ position: [0, 8, 12], fov: 60, near: 0.1, far: 500 }}
         gl={{ alpha: false, antialias: true, powerPreference: "high-performance" }}
         onCreated={({ gl }) => {
           gl.setClearColor(0x0a0a0f, 1);
@@ -229,11 +282,11 @@ export default function GameArena({ playerId }: GameArenaProps) {
           gl.toneMappingExposure = 1.0;
         }}
       >
-        {/* Scene background — declarative R3F way */}
+        {/* Scene background */}
         <color attach="background" args={["#0a0a0f"]} />
 
-        {/* Fog for atmosphere */}
-        <fog attach="fog" args={["#0a0a0f", 40, 120]} />
+        {/* Fog */}
+        <fog attach="fog" args={["#0a0a0f", 60, 200]} />
 
         {/* Lighting */}
         <ambientLight intensity={0.6} />
@@ -250,31 +303,33 @@ export default function GameArena({ playerId }: GameArenaProps) {
           shadow-camera-bottom={-50}
         />
         <pointLight position={[0, 15, 0]} intensity={0.5} color="#22d3ee" />
+        <hemisphereLight args={["#87ceeb", "#444444", 0.3]} />
 
-        {/* Camera follow */}
-        <FollowCamera playerId={playerId} />
+        {/* Third-person camera */}
+        <ThirdPersonCamera playerId={playerId} mapCenter={mapCenter} />
 
-        {/* Platform */}
+        {/* Platform — centered at origin */}
         <Platform
           length={gameState.map.length}
           width={gameState.map.width}
           mapType={gameState.map.type}
         />
 
-        {/* Void / water below platform */}
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[gameState.map.length / 2, -5, gameState.map.width / 2]}>
-          <planeGeometry args={[200, 200]} />
+        {/* Void below platform */}
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -5, 0]}>
+          <planeGeometry args={[300, 300]} />
           <meshStandardMaterial color="#050510" transparent opacity={0.9} />
         </mesh>
 
-        {/* Environment scenery GLB + Penguins — wrapped in Suspense */}
+        {/* Environment + Penguins — wrapped in Suspense */}
         <Suspense fallback={null}>
-          <EnvironmentModel mapType={gameState.map.type} />
+          <EnvironmentModel mapType={gameState.map.type} center={[0, 0, 0]} />
           {players.map((penguin) => (
             <PenguinModel
               key={penguin.id}
               penguin={penguin}
               isCurrentPlayer={penguin.id === playerId}
+              mapCenter={mapCenter}
             />
           ))}
         </Suspense>
