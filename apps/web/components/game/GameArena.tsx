@@ -17,12 +17,20 @@ import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator.
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder.js";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode.js";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial.js";
-import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial.js";
 import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader.js";
 import { Mesh } from "@babylonjs/core/Meshes/mesh.js";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData.js";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh.js";
-// Side-effect import: registers glTF/GLB loader plugin
+
+// Side-effect imports: register scene components for tree-shaking
+import "@babylonjs/core/Lights/Shadows/shadowGeneratorSceneComponent.js";
+import "@babylonjs/core/Rendering/edgesRenderer.js";
+import "@babylonjs/core/Meshes/Builders/boxBuilder.js";
+import "@babylonjs/core/Meshes/Builders/groundBuilder.js";
+import "@babylonjs/core/Meshes/Builders/torusBuilder.js";
+import "@babylonjs/core/Materials/standardMaterial.js";
+import "@babylonjs/core/Loading/loadingScreen.js";
+// GLB/glTF loader plugin
 import "@babylonjs/loaders/glTF/2.0/index.js";
 
 /* ------------------------------------------------------------------ */
