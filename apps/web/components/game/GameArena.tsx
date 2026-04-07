@@ -1,7 +1,7 @@
 "use client";
 
-import { useRef, useEffect, Suspense, useMemo } from "react";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { useRef, useEffect, Suspense, useMemo, useState, Component, type ReactNode } from "react";
+import { Canvas, useFrame } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import { useGameStore } from "@/lib/game-store";
@@ -421,82 +421,160 @@ interface GameArenaProps {
   playerId: string;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Error boundary for Canvas crashes                                  */
+/* ------------------------------------------------------------------ */
+class CanvasErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: string | null }
+> {
+  state = { error: null as string | null };
+
+  static getDerivedStateFromError(err: Error) {
+    return { error: err.message };
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="w-full h-full flex items-center justify-center bg-[#0a0a0f]">
+          <div className="text-center max-w-md px-6">
+            <p className="text-red-400 text-lg font-bold mb-2">3D Renderer Error</p>
+            <p className="text-white/50 text-sm mb-4">{this.state.error}</p>
+            <button
+              onClick={() => this.setState({ error: null })}
+              className="px-4 py-2 rounded bg-white/10 text-white/70 text-sm hover:bg-white/20"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  WebGL availability check                                           */
+/* ------------------------------------------------------------------ */
+function useWebGLAvailable() {
+  const [available, setAvailable] = useState<boolean | null>(null);
+  useEffect(() => {
+    try {
+      const canvas = document.createElement("canvas");
+      const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
+      setAvailable(!!gl);
+      if (gl) {
+        const ext = gl.getExtension("WEBGL_lose_context");
+        ext?.loseContext();
+      }
+    } catch {
+      setAvailable(false);
+    }
+  }, []);
+  return available;
+}
+
 export default function GameArena({ playerId }: GameArenaProps) {
   const gameState = useGameStore((s) => s.gameState);
+  const webglAvailable = useWebGLAvailable();
 
   if (!gameState) return null;
 
+  if (webglAvailable === false) {
+    return (
+      <div style={{ position: "absolute", top: 0, left: 0, width: "100vw", height: "100vh" }}
+        className="flex items-center justify-center bg-[#0a0a0f]"
+      >
+        <div className="text-center max-w-md px-6">
+          <p className="text-red-400 text-xl font-bold mb-2">WebGL Not Available</p>
+          <p className="text-white/50 text-sm">
+            Your browser or device does not support WebGL, which is required
+            for the 3D game arena. Try a different browser or enable hardware
+            acceleration in your browser settings.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Still checking — show loading
+  if (webglAvailable === null) {
+    return (
+      <div style={{ position: "absolute", top: 0, left: 0, width: "100vw", height: "100vh" }}
+        className="flex items-center justify-center bg-[#0a0a0f]"
+      >
+        <div className="text-white/40 text-sm">Initializing 3D arena...</div>
+      </div>
+    );
+  }
+
   const players = Object.values(gameState.players);
-  const mapCenter = useMemo(() => ({
+  const mapCenter = {
     x: gameState.map.length / 2,
     z: gameState.map.width / 2,
-  }), [gameState.map.length, gameState.map.width]);
+  };
 
   return (
     <div style={{ position: "absolute", top: 0, left: 0, width: "100vw", height: "100vh" }}>
-      <Canvas
-        shadows={{ type: THREE.PCFShadowMap }}
-        camera={{ position: [0, 15, 25], fov: 60, near: 0.1, far: 500 }}
-        gl={{ alpha: false, antialias: true, powerPreference: "high-performance" }}
-        onCreated={({ gl }) => {
-          gl.setClearColor(0x87ceeb, 1);
-          gl.toneMapping = THREE.ACESFilmicToneMapping;
-          gl.toneMappingExposure = 1.8;
-        }}
-      >
-        {/* Sky background — bright blue */}
-        <color attach="background" args={["#87ceeb"]} />
+      <CanvasErrorBoundary>
+        <Canvas
+          shadows={{ type: THREE.PCFShadowMap }}
+          camera={{ position: [0, 15, 25], fov: 60, near: 0.1, far: 500 }}
+          gl={{ alpha: false, antialias: true, powerPreference: "default" }}
+          onCreated={({ gl }) => {
+            gl.setClearColor(0x87ceeb, 1);
+            gl.toneMapping = THREE.ACESFilmicToneMapping;
+            gl.toneMappingExposure = 1.8;
+          }}
+        >
+          <color attach="background" args={["#87ceeb"]} />
+          <fog attach="fog" args={["#87ceeb", 100, 350]} />
 
-        {/* Fog — far away for visibility */}
-        <fog attach="fog" args={["#87ceeb", 100, 350]} />
+          <ambientLight intensity={1.4} />
+          <directionalLight
+            position={[30, 50, 25]}
+            intensity={2.2}
+            castShadow
+            shadow-mapSize-width={2048}
+            shadow-mapSize-height={2048}
+            shadow-camera-far={120}
+            shadow-camera-left={-60}
+            shadow-camera-right={60}
+            shadow-camera-top={60}
+            shadow-camera-bottom={-60}
+          />
+          <directionalLight position={[-20, 25, -15]} intensity={0.8} />
+          <pointLight position={[0, 25, 0]} intensity={0.5} color="#ffffff" />
+          <hemisphereLight args={["#b4d7ff", "#88aacc", 0.8]} />
 
-        {/* Lighting — bright and clear like reference */}
-        <ambientLight intensity={1.4} />
-        <directionalLight
-          position={[30, 50, 25]}
-          intensity={2.2}
-          castShadow
-          shadow-mapSize-width={2048}
-          shadow-mapSize-height={2048}
-          shadow-camera-far={120}
-          shadow-camera-left={-60}
-          shadow-camera-right={60}
-          shadow-camera-top={60}
-          shadow-camera-bottom={-60}
-        />
-        <directionalLight position={[-20, 25, -15]} intensity={0.8} />
-        <pointLight position={[0, 25, 0]} intensity={0.5} color="#ffffff" />
-        <hemisphereLight args={["#b4d7ff", "#88aacc", 0.8]} />
+          <GameCamera playerId={playerId} mapCenter={mapCenter} />
 
-        {/* Camera */}
-        <GameCamera playerId={playerId} mapCenter={mapCenter} />
+          <Platform
+            length={gameState.map.length}
+            width={gameState.map.width}
+            mapType={gameState.map.type}
+          />
 
-        {/* Platform — centered at origin */}
-        <Platform
-          length={gameState.map.length}
-          width={gameState.map.width}
-          mapType={gameState.map.type}
-        />
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -3, 0]}>
+            <planeGeometry args={[400, 400]} />
+            <meshStandardMaterial color="#2196f3" transparent opacity={0.7} roughness={0.2} metalness={0.3} />
+          </mesh>
 
-        {/* Water/void below platform */}
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -3, 0]}>
-          <planeGeometry args={[400, 400]} />
-          <meshStandardMaterial color="#2196f3" transparent opacity={0.7} roughness={0.2} metalness={0.3} />
-        </mesh>
-
-        {/* Environment + Penguins — wrapped in Suspense */}
-        <Suspense fallback={null}>
-          <EnvironmentModel mapType={gameState.map.type} />
-          {players.map((penguin) => (
-            <PenguinModel
-              key={penguin.id}
-              penguin={penguin}
-              isCurrentPlayer={penguin.id === playerId}
-              mapCenter={mapCenter}
-            />
-          ))}
-        </Suspense>
-      </Canvas>
+          <Suspense fallback={null}>
+            <EnvironmentModel mapType={gameState.map.type} />
+            {players.map((penguin) => (
+              <PenguinModel
+                key={penguin.id}
+                penguin={penguin}
+                isCurrentPlayer={penguin.id === playerId}
+                mapCenter={mapCenter}
+              />
+            ))}
+          </Suspense>
+        </Canvas>
+      </CanvasErrorBoundary>
     </div>
   );
 }
