@@ -1,13 +1,33 @@
 "use client";
 
-import { useRef } from "react";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { useRef, Suspense } from "react";
+import { Canvas, useFrame } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import { useGameStore } from "@/lib/game-store";
-import { skinToGlb } from "@/lib/constants";
+import { skinToGlb, mapToEnvironmentGlb } from "@/lib/constants";
 import type { Penguin } from "@/lib/types";
 
+/* ------------------------------------------------------------------ */
+/*  Environment model — loads the per-map GLB scenery                 */
+/* ------------------------------------------------------------------ */
+function EnvironmentModel({ mapType }: { mapType: string }) {
+  const glbPath = mapToEnvironmentGlb(mapType);
+  const { scene } = useGLTF(glbPath);
+
+  return (
+    <primitive
+      object={scene.clone()}
+      scale={[1, 1, 1]}
+      position={[0, 0, 0]}
+      receiveShadow
+    />
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Penguin model                                                     */
+/* ------------------------------------------------------------------ */
 interface PenguinModelProps {
   penguin: Penguin;
   isCurrentPlayer: boolean;
@@ -76,6 +96,9 @@ function PenguinModel({ penguin, isCurrentPlayer }: PenguinModelProps) {
   );
 }
 
+/* ------------------------------------------------------------------ */
+/*  Platform                                                          */
+/* ------------------------------------------------------------------ */
 interface PlatformProps {
   length: number;
   width: number;
@@ -83,7 +106,6 @@ interface PlatformProps {
 }
 
 function Platform({ length, width, mapType }: PlatformProps) {
-  const prevDims = useRef({ length, width });
   const meshRef = useRef<THREE.Mesh>(null!);
   const scaleRef = useRef(new THREE.Vector3(length, 0.5, width));
   const posRef = useRef(new THREE.Vector3(length / 2, -0.25, width / 2));
@@ -94,7 +116,6 @@ function Platform({ length, width, mapType }: PlatformProps) {
 
   useFrame((_, delta) => {
     if (!meshRef.current) return;
-    // Smooth platform shrinking
     meshRef.current.scale.lerp(scaleRef.current, 1 - Math.exp(-3 * delta));
     meshRef.current.position.lerp(posRef.current, 1 - Math.exp(-3 * delta));
   });
@@ -153,6 +174,9 @@ function Platform({ length, width, mapType }: PlatformProps) {
   );
 }
 
+/* ------------------------------------------------------------------ */
+/*  Follow camera                                                     */
+/* ------------------------------------------------------------------ */
 function FollowCamera({ playerId }: { playerId: string }) {
   const offset = useRef(new THREE.Vector3(0, 18, 15));
   const currentPos = useRef(new THREE.Vector3());
@@ -164,7 +188,6 @@ function FollowCamera({ playerId }: { playerId: string }) {
 
     const player = gs.players[playerId];
     if (!player) {
-      // Center on map
       lookTarget.current.set(gs.map.length / 2, 0, gs.map.width / 2);
     } else {
       lookTarget.current.set(player.position.x, 0, player.position.z);
@@ -180,19 +203,11 @@ function FollowCamera({ playerId }: { playerId: string }) {
   return null;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Main arena                                                        */
+/* ------------------------------------------------------------------ */
 interface GameArenaProps {
   playerId: string;
-}
-
-const darkBg = new THREE.Color("#0a0a0f");
-
-function SceneBackground() {
-  const { scene, gl } = useThree();
-  useFrame(() => {
-    scene.background = darkBg;
-    gl.setClearColor(0x0a0a0f, 1);
-  });
-  return null;
 }
 
 export default function GameArena({ playerId }: GameArenaProps) {
@@ -204,62 +219,66 @@ export default function GameArena({ playerId }: GameArenaProps) {
 
   return (
     <div style={{ position: "absolute", top: 0, left: 0, width: "100vw", height: "100vh" }}>
-    <Canvas
-      shadows={{ type: THREE.PCFShadowMap }}
-      camera={{ position: [20, 18, 25], fov: 50, near: 0.1, far: 200 }}
-      gl={{ alpha: false, antialias: true, powerPreference: "high-performance" }}
-      onCreated={({ scene, gl }) => {
-        scene.background = new THREE.Color(0x0a0a0f);
-        gl.setClearColor(0x0a0a0f, 1);
-      }}
-    >
+      <Canvas
+        shadows={{ type: THREE.PCFShadowMap }}
+        camera={{ position: [20, 18, 25], fov: 50, near: 0.1, far: 200 }}
+        gl={{ alpha: false, antialias: true, powerPreference: "high-performance" }}
+        onCreated={({ gl }) => {
+          gl.setClearColor(0x0a0a0f, 1);
+          gl.toneMapping = THREE.ACESFilmicToneMapping;
+          gl.toneMappingExposure = 1.0;
+        }}
+      >
+        {/* Scene background — declarative R3F way */}
+        <color attach="background" args={["#0a0a0f"]} />
 
-      {/* Lighting */}
-      <ambientLight intensity={0.6} />
-      <directionalLight
-        position={[20, 30, 20]}
-        intensity={1.4}
-        castShadow
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
-        shadow-camera-far={100}
-        shadow-camera-left={-50}
-        shadow-camera-right={50}
-        shadow-camera-top={50}
-        shadow-camera-bottom={-50}
-      />
-      <pointLight position={[0, 15, 0]} intensity={0.5} color="#22d3ee" />
+        {/* Fog for atmosphere */}
+        <fog attach="fog" args={["#0a0a0f", 40, 120]} />
 
-      {/* Fog for atmosphere */}
-      <fog attach="fog" args={["#0a0a0f", 40, 120]} />
-
-      {/* Camera follow */}
-      <FollowCamera playerId={playerId} />
-
-      {/* Platform */}
-      <Platform
-        length={gameState.map.length}
-        width={gameState.map.width}
-        mapType={gameState.map.type}
-      />
-
-      {/* Void / water below platform */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[gameState.map.length / 2, -5, gameState.map.width / 2]}>
-        <planeGeometry args={[200, 200]} />
-        <meshStandardMaterial color="#050510" transparent opacity={0.9} />
-      </mesh>
-
-      {/* Penguins */}
-      {players.map((penguin) => (
-        <PenguinModel
-          key={penguin.id}
-          penguin={penguin}
-          isCurrentPlayer={penguin.id === playerId}
+        {/* Lighting */}
+        <ambientLight intensity={0.6} />
+        <directionalLight
+          position={[20, 30, 20]}
+          intensity={1.4}
+          castShadow
+          shadow-mapSize-width={2048}
+          shadow-mapSize-height={2048}
+          shadow-camera-far={100}
+          shadow-camera-left={-50}
+          shadow-camera-right={50}
+          shadow-camera-top={50}
+          shadow-camera-bottom={-50}
         />
-      ))}
+        <pointLight position={[0, 15, 0]} intensity={0.5} color="#22d3ee" />
 
-      <SceneBackground />
-    </Canvas>
+        {/* Camera follow */}
+        <FollowCamera playerId={playerId} />
+
+        {/* Platform */}
+        <Platform
+          length={gameState.map.length}
+          width={gameState.map.width}
+          mapType={gameState.map.type}
+        />
+
+        {/* Void / water below platform */}
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[gameState.map.length / 2, -5, gameState.map.width / 2]}>
+          <planeGeometry args={[200, 200]} />
+          <meshStandardMaterial color="#050510" transparent opacity={0.9} />
+        </mesh>
+
+        {/* Environment scenery GLB + Penguins — wrapped in Suspense */}
+        <Suspense fallback={null}>
+          <EnvironmentModel mapType={gameState.map.type} />
+          {players.map((penguin) => (
+            <PenguinModel
+              key={penguin.id}
+              penguin={penguin}
+              isCurrentPlayer={penguin.id === playerId}
+            />
+          ))}
+        </Suspense>
+      </Canvas>
     </div>
   );
 }
