@@ -36,7 +36,7 @@ export default function JoinPage() {
 
   const handleJoin = () => {
     if (!gameCode.trim()) return;
-    setGameId(gameCode.trim().toUpperCase());
+    setGameId(gameCode.trim());
     setIsHost(false);
     // Store skin choice for the game page to use
     sessionStorage.setItem("selectedSkin", selectedSkin);
@@ -67,10 +67,10 @@ export default function JoinPage() {
           <input
             type="text"
             value={gameCode}
-            onChange={(e) => setGameCode(e.target.value.toUpperCase())}
+            onChange={(e) => setGameCode(e.target.value)}
             maxLength={10}
-            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-4 text-center text-2xl font-mono font-bold text-white tracking-[0.3em] placeholder-white/20 focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/30 transition-all uppercase"
-            placeholder="ABCDEF"
+            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-4 text-center text-2xl font-mono font-bold text-white tracking-[0.3em] placeholder-white/20 focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/30 transition-all"
+            placeholder="Enter code"
             autoFocus
           />
         </div>

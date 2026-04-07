@@ -100,8 +100,8 @@ export default function GamePage({
         </div>
       )}
 
-      {/* 3D Arena (full screen) */}
-      <GameArena playerId={playerId || ""} />
+      {/* 3D Arena (full screen) — only mount when we have game state */}
+      {gameState && <GameArena playerId={playerId || ""} />}
 
       {/* HUD overlay */}
       <GameHUD />
