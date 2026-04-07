@@ -66,8 +66,8 @@ function DirectionArrow({ power, color, visible }: { power: number; color: strin
 
   return (
     <group ref={groupRef} position={[0, 2.8, 0]}>
-      {/* Rotate shape: -90° around X makes +Y → -Z (forward in penguin space) */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]}>
+      {/* Rotate shape: +90° around X makes +Y → +Z (forward, matches model face) */}
+      <mesh rotation={[Math.PI / 2, 0, 0]}>
         <shapeGeometry args={[arrowShape]} />
         <meshBasicMaterial color={color} transparent opacity={0.9} side={THREE.DoubleSide} />
       </mesh>
@@ -134,12 +134,11 @@ function PenguinModel({ penguin, isCurrentPlayer, mapCenter }: PenguinModelProps
     }
 
     // Rotate penguin to face its direction
-    // Physics: direction 0° = +X, 90° = +Z
-    // Three.js: rotation.y = θ → forward = (-sin(θ), -cos(θ))
-    // To face (cos(rad), sin(rad)): targetRotY = -rad - π/2
+    // Model face is along local +Z. rotation.y = θ maps +Z to (sin(θ), cos(θ)).
+    // Physics direction = (cos(rad), sin(rad)). So sin(θ)=cos(rad), cos(θ)=sin(rad) → θ = π/2 - rad
     const dir = isCurrentPlayer && phase === "countdown" ? aimDirection : penguin.direction;
     const rad = (dir * Math.PI) / 180;
-    const targetRotY = -rad - Math.PI / 2;
+    const targetRotY = -rad + Math.PI / 2;
     groupRef.current.rotation.y +=
       (targetRotY - groupRef.current.rotation.y) * (1 - Math.exp(-10 * delta));
   });
