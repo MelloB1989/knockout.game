@@ -34,7 +34,7 @@ export default function GamePage({
   const { gameId } = use(params);
   const router = useRouter();
   const { token, playerId, playerSecret, isReady, username } = useAuthStore();
-  const { phase, gameState, setGameId, setIsHost, reset } = useGameStore();
+  const { phase, gameState, setGameId, setPlayerId, setIsHost, reset } = useGameStore();
   const connectedRef = useRef(false);
 
   useEffect(() => {
@@ -44,6 +44,7 @@ export default function GamePage({
     }
 
     setGameId(gameId);
+    if (playerId) setPlayerId(playerId);
 
     // Prevent double-connect from React strict mode
     if (connectedRef.current) return;

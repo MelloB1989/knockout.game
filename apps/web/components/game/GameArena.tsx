@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, Suspense, useMemo } from "react";
+import { useRef, useEffect, Suspense, useMemo } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
@@ -25,35 +25,37 @@ function EnvironmentModel({ mapType, center }: { mapType: string; center: [numbe
 }
 
 /* ------------------------------------------------------------------ */
-/*  Direction Arrow — vertical arrow above penguin pointing aim dir   */
+/*  Direction Arrow — points forward from penguin, length = power     */
 /* ------------------------------------------------------------------ */
-function DirectionArrow({ direction, color, visible }: { direction: number; color: string; visible: boolean }) {
+function DirectionArrow({ power, color, visible }: { power: number; color: string; visible: boolean }) {
   const groupRef = useRef<THREE.Group>(null!);
   const time = useRef(0);
+
+  // Arrow length scales with power: power 2 → short, power 10 → long
+  const shaftLen = 0.5 + (power / 10) * 2.0;
+  const conePos = -(shaftLen + 0.35);
+  const shaftPos = -(shaftLen / 2);
 
   useFrame((_, delta) => {
     if (!groupRef.current) return;
     groupRef.current.visible = visible;
     if (visible) {
-      const rad = (direction * Math.PI) / 180;
-      groupRef.current.rotation.y = -rad + Math.PI / 2;
-      // Gentle bob
       time.current += delta;
-      groupRef.current.position.y = 2.5 + Math.sin(time.current * 3) * 0.15;
+      groupRef.current.position.y = 2.5 + Math.sin(time.current * 3) * 0.12;
     }
   });
 
   return (
     <group ref={groupRef} position={[0, 2.5, 0]}>
-      {/* Arrow head (cone) pointing forward */}
-      <mesh position={[0, 0, -1.0]} rotation={[Math.PI / 2, 0, 0]}>
-        <coneGeometry args={[0.35, 0.7, 6]} />
-        <meshBasicMaterial color={color} transparent opacity={0.95} />
+      {/* Arrow shaft — along local -Z (forward in penguin space) */}
+      <mesh position={[0, 0, shaftPos]}>
+        <boxGeometry args={[0.12, 0.12, shaftLen]} />
+        <meshBasicMaterial color={color} transparent opacity={0.85} />
       </mesh>
-      {/* Arrow shaft */}
-      <mesh position={[0, 0, -0.3]}>
-        <boxGeometry args={[0.15, 0.15, 1.0]} />
-        <meshBasicMaterial color={color} transparent opacity={0.8} />
+      {/* Arrow head (cone) — tip of the arrow */}
+      <mesh position={[0, 0, conePos]} rotation={[Math.PI / 2, 0, 0]}>
+        <coneGeometry args={[0.3, 0.6, 6]} />
+        <meshBasicMaterial color={color} transparent opacity={0.95} />
       </mesh>
     </group>
   );
@@ -75,7 +77,7 @@ function PenguinModel({ penguin, isCurrentPlayer, mapCenter }: PenguinModelProps
 
   const phase = useGameStore((s) => s.phase);
   const aimDirection = useGameStore((s) => s.aimDirection);
-  const moveSubmitted = useGameStore((s) => s.moveSubmitted);
+  const aimPower = useGameStore((s) => s.aimPower);
 
   // Center-relative position
   const cx = penguin.position.x - mapCenter.x;
@@ -102,9 +104,9 @@ function PenguinModel({ penguin, isCurrentPlayer, mapCenter }: PenguinModelProps
       (targetRotY - groupRef.current.rotation.y) * (1 - Math.exp(-10 * delta));
   });
 
-  // Determine arrow visibility and direction
+  // Determine arrow visibility
   const showArrow = phase === "countdown" || phase === "animating";
-  const arrowDir = isCurrentPlayer ? aimDirection : penguin.direction;
+  const arrowPower = isCurrentPlayer ? aimPower : 6;
   const arrowColor = isCurrentPlayer ? "#ffcc00" : "#ff4444";
 
   return (
@@ -115,9 +117,9 @@ function PenguinModel({ penguin, isCurrentPlayer, mapCenter }: PenguinModelProps
         castShadow
         receiveShadow
       />
-      {/* Direction arrow */}
+      {/* Direction arrow — no own rotation, inherits from penguin group */}
       <DirectionArrow
-        direction={arrowDir}
+        power={arrowPower}
         color={arrowColor}
         visible={showArrow && penguin.eliminated === 0}
       />
@@ -204,10 +206,50 @@ function Platform({ length, width, mapType }: PlatformProps) {
 
 /* ------------------------------------------------------------------ */
 /*  Third-person camera — behind the player's penguin                 */
+/*  Supports: horizontal aim rotation, vertical pitch, scroll zoom    */
 /* ------------------------------------------------------------------ */
 function ThirdPersonCamera({ playerId, mapCenter }: { playerId: string; mapCenter: { x: number; z: number } }) {
   const currentCamPos = useRef(new THREE.Vector3(0, 8, 12));
   const currentLookAt = useRef(new THREE.Vector3());
+  const camPitch = useRef(0.35); // radians, 0 = level, positive = looking down
+  const camDist = useRef(12);
+
+  // Scroll to zoom
+  useEffect(() => {
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      camDist.current = Math.max(5, Math.min(25, camDist.current + e.deltaY * 0.01));
+    };
+    window.addEventListener("wheel", onWheel, { passive: false });
+    return () => window.removeEventListener("wheel", onWheel);
+  }, []);
+
+  // Right-click drag for vertical pitch
+  useEffect(() => {
+    let dragging = false;
+    let lastY = 0;
+    const onDown = (e: MouseEvent) => {
+      if (e.button === 2) { dragging = true; lastY = e.clientY; e.preventDefault(); }
+    };
+    const onMove = (e: MouseEvent) => {
+      if (!dragging) return;
+      const dy = e.clientY - lastY;
+      lastY = e.clientY;
+      camPitch.current = Math.max(0.05, Math.min(1.2, camPitch.current + dy * 0.005));
+    };
+    const onUp = (e: MouseEvent) => { if (e.button === 2) dragging = false; };
+    const onCtx = (e: MouseEvent) => e.preventDefault();
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    window.addEventListener("contextmenu", onCtx);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("contextmenu", onCtx);
+    };
+  }, []);
 
   useFrame(({ camera }, delta) => {
     const gs = useGameStore.getState().gameState;
@@ -217,7 +259,6 @@ function ThirdPersonCamera({ playerId, mapCenter }: { playerId: string; mapCente
 
     const player = gs.players[playerId];
 
-    // Player's center-relative position
     let px: number, pz: number;
     if (!player || player.eliminated > 0) {
       px = 0;
@@ -229,15 +270,15 @@ function ThirdPersonCamera({ playerId, mapCenter }: { playerId: string; mapCente
 
     const lookTarget = new THREE.Vector3(px, 1, pz);
 
-    // Camera behind the player based on their facing direction
     const dir = phase === "countdown" ? aimDirection : (player?.direction ?? 0);
     const rad = (dir * Math.PI) / 180;
 
-    // Camera offset: behind and above the penguin
-    const camDist = 10;
-    const camHeight = 6;
-    const camX = px - Math.cos(rad) * camDist;
-    const camZ = pz - Math.sin(rad) * camDist;
+    const dist = camDist.current;
+    const pitch = camPitch.current;
+    const camHeight = dist * Math.sin(pitch);
+    const horizDist = dist * Math.cos(pitch);
+    const camX = px - Math.cos(rad) * horizDist;
+    const camZ = pz - Math.sin(rad) * horizDist;
     const desiredPos = new THREE.Vector3(camX, camHeight, camZ);
 
     const smoothSpeed = phase === "countdown" ? 5 : 3;
@@ -276,33 +317,34 @@ export default function GameArena({ playerId }: GameArenaProps) {
         camera={{ position: [0, 8, 12], fov: 60, near: 0.1, far: 500 }}
         gl={{ alpha: false, antialias: true, powerPreference: "high-performance" }}
         onCreated={({ gl }) => {
-          gl.setClearColor(0x0a0a0f, 1);
+          gl.setClearColor(0x1a1a2e, 1);
           gl.toneMapping = THREE.ACESFilmicToneMapping;
-          gl.toneMappingExposure = 1.0;
+          gl.toneMappingExposure = 1.6;
         }}
       >
         {/* Scene background */}
-        <color attach="background" args={["#0a0a0f"]} />
+        <color attach="background" args={["#1a1a2e"]} />
 
-        {/* Fog */}
-        <fog attach="fog" args={["#0a0a0f", 60, 200]} />
+        {/* Fog — pushed back for visibility */}
+        <fog attach="fog" args={["#1a1a2e", 80, 300]} />
 
-        {/* Lighting */}
-        <ambientLight intensity={0.6} />
+        {/* Lighting — brighter for better visibility */}
+        <ambientLight intensity={1.2} />
         <directionalLight
-          position={[20, 30, 20]}
-          intensity={1.4}
+          position={[30, 40, 20]}
+          intensity={2.0}
           castShadow
           shadow-mapSize-width={2048}
           shadow-mapSize-height={2048}
-          shadow-camera-far={100}
-          shadow-camera-left={-50}
-          shadow-camera-right={50}
-          shadow-camera-top={50}
-          shadow-camera-bottom={-50}
+          shadow-camera-far={120}
+          shadow-camera-left={-60}
+          shadow-camera-right={60}
+          shadow-camera-top={60}
+          shadow-camera-bottom={-60}
         />
-        <pointLight position={[0, 15, 0]} intensity={0.5} color="#22d3ee" />
-        <hemisphereLight args={["#87ceeb", "#444444", 0.3]} />
+        <directionalLight position={[-20, 20, -10]} intensity={0.6} />
+        <pointLight position={[0, 20, 0]} intensity={0.8} color="#22d3ee" />
+        <hemisphereLight args={["#b4d7ff", "#666666", 0.6]} />
 
         {/* Third-person camera */}
         <ThirdPersonCamera playerId={playerId} mapCenter={mapCenter} />
@@ -317,7 +359,7 @@ export default function GameArena({ playerId }: GameArenaProps) {
         {/* Void below platform */}
         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -5, 0]}>
           <planeGeometry args={[300, 300]} />
-          <meshStandardMaterial color="#050510" transparent opacity={0.9} />
+          <meshStandardMaterial color="#0d0d1a" transparent opacity={0.9} />
         </mesh>
 
         {/* Environment + Penguins — wrapped in Suspense */}

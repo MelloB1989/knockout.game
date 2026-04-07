@@ -14,6 +14,7 @@ export type GamePhase = "idle" | "lobby" | "countdown" | "playing" | "animating"
 interface GameStore {
   // Core state
   gameId: string | null;
+  playerId: string | null;
   gameState: GameState | null;
   phase: GamePhase;
   isHost: boolean;
@@ -41,6 +42,7 @@ interface GameStore {
 
   // Actions
   setGameId: (id: string) => void;
+  setPlayerId: (id: string) => void;
   setGameState: (gs: GameState) => void;
   setPhase: (phase: GamePhase) => void;
   setIsHost: (h: boolean) => void;
@@ -65,6 +67,7 @@ interface GameStore {
 
 const initialState = {
   gameId: null,
+  playerId: null,
   gameState: null,
   phase: "idle" as GamePhase,
   isHost: false,
@@ -85,6 +88,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   ...initialState,
 
   setGameId: (id) => set({ gameId: id }),
+  setPlayerId: (id) => set({ playerId: id }),
   setGameState: (gs) => {
     const positions: Record<string, { x: number; z: number }> = {};
     if (gs?.players) {
@@ -103,6 +107,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
   setIsHost: (h) => set({ isHost: h }),
 
   handleCountdown: (payload) => {
+    const prevPhase = get().phase;
+    const currentAimDir = get().aimDirection;
+    const currentAimPower = get().aimPower;
+
+    // When transitioning from non-countdown (e.g. animating) to countdown,
+    // initialize aim from the player's last direction in game state
+    let newAimDir = currentAimDir;
+    if (prevPhase !== "countdown") {
+      const pid = get().playerId;
+      const gs = get().gameState;
+      if (pid && gs?.players[pid]) {
+        newAimDir = gs.players[pid].direction;
+      }
+    }
+
     set({
       countdown: payload.seconds_remaining,
       totalCountdown: payload.total_seconds,
@@ -112,8 +131,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       pendingMove: null,
       roundMoves: null,
       eliminatedThisRound: [],
-      aimDirection: 0,
-      aimPower: 6,
+      aimDirection: newAimDir,
+      aimPower: prevPhase === "countdown" ? currentAimPower : currentAimPower || 6,
     });
   },
 
