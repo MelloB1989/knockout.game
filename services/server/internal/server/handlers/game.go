@@ -27,6 +27,7 @@ type events string
 const (
 	registerPlayer events = "register_player"
 	registerMove   events = "register_move"
+	updatePosition events = "update_position"
 	getState       events = "get_state"
 	errorEvent     events = "error"
 	startGame      events = "start_game"
@@ -281,6 +282,21 @@ func WSHandler(c *websocket.Conn) {
 						PlayerId: playerId,
 					},
 				})
+			}
+		case updatePosition:
+			// Accept lobby/eliminated position updates and broadcast
+			var pos entities.Position
+			if err := json.Unmarshal(msg.Data, &pos); err != nil {
+				continue
+			}
+			player, ok := game.GameState.Players[playerId]
+			if !ok {
+				continue
+			}
+			player.Position = pos
+			game.GameState.Players[playerId] = player
+			if _, err := game.UpdateGame(); err == nil {
+				_ = game.PublishEvent(repository.PlayersPositionUpdate, nil, game.GameState)
 			}
 		case startGame:
 			if game.GameState.HostId != "" && game.GameState.HostId != playerId {

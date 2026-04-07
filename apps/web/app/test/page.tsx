@@ -20,9 +20,9 @@ const GameArena = dynamic(() => import("@/components/game/GameArena"), {
 /*  Constants                                                         */
 /* ------------------------------------------------------------------ */
 const PLAYER_ID = "you";
-const MAP_LENGTH = 20;
-const MAP_WIDTH = 20;
-const MAP_FRICTION = 0.2;
+const MAP_LENGTH = 50;
+const MAP_WIDTH = 25;
+const MAP_FRICTION = 0.18;
 const POWER_SCALE = 2.5;
 const DT = 0.3;
 const VEL_EPSILON = 0.3;
@@ -306,6 +306,7 @@ export default function TestPage() {
           simRef.current = null;
 
           // Check eliminations
+          const anyEliminated = Object.values(sim).some(s => s.eliminated === round);
           for (const [id, s] of Object.entries(sim)) {
             if (s.eliminated === round) {
               const by = s.lastHitBy ? ` by ${s.lastHitBy}` : "";
@@ -318,12 +319,30 @@ export default function TestPage() {
             }
           }
 
+          // Map shrinking: mirror server shrinkMap() — 10% per axis on elimination
+          let newMapLength = gs.map.length;
+          let newMapWidth = gs.map.width;
+          if (anyEliminated) {
+            newMapLength = Math.max(1, Math.floor(gs.map.length * 0.9));
+            newMapWidth = Math.max(1, Math.floor(gs.map.width * 0.9));
+            const scaleX = newMapLength / gs.map.length;
+            const scaleZ = newMapWidth / gs.map.width;
+            for (const s of Object.values(sim)) {
+              if (s.eliminated === 0) {
+                s.x = Math.max(0, Math.min(newMapLength, s.x * scaleX));
+                s.z = Math.max(0, Math.min(newMapWidth, s.z * scaleZ));
+              }
+            }
+            addLog(`R${round}: Map shrunk to ${newMapLength}x${newMapWidth}`);
+          }
+
           // Update final game state
           const finalPlayers = simToPlayers(sim, gs.players);
           const finalGs: GameState = {
             ...gs,
             players: finalPlayers,
             current_round: round + 1,
+            map: { ...gs.map, length: newMapLength, width: newMapWidth },
           };
           store.setGameState(finalGs);
 
@@ -401,7 +420,7 @@ export default function TestPage() {
   }, [handleReset]);
 
   return (
-    <div className="fixed inset-0 bg-[#0a0a0f]">
+    <div className="fixed inset-0 bg-[var(--bg-primary)]">
       {/* 3D Arena */}
       {gameState && <GameArena playerId={PLAYER_ID} />}
 
@@ -412,27 +431,34 @@ export default function TestPage() {
       {/* Game over */}
       {phase === "ended" && (
         <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-md">
-          <div className="bg-[#12121f]/95 border border-white/10 rounded-2xl p-8 max-w-sm w-full mx-4 text-center">
-            <h1 className="text-3xl font-black text-white mb-2">
+          <div
+            className="rounded-2xl p-8 max-w-sm w-full mx-4 text-center"
+            style={{
+              background: "linear-gradient(135deg, rgba(28,24,20,0.97) 0%, rgba(15,13,10,0.97) 100%)",
+              border: "2px solid var(--border-warm)",
+              boxShadow: "0 0 40px rgba(255,107,44,0.1), 0 8px 32px rgba(0,0,0,0.5)",
+            }}
+          >
+            <h1 className="text-3xl font-[family-name:var(--font-bungee)] text-gradient-warm mb-2">
               {useGameStore.getState().winnerId === PLAYER_ID ? "YOU WIN!" : "GAME OVER"}
             </h1>
-            <p className="text-white/50 mb-6">
+            <p className="text-[var(--text-muted)] mb-6 font-[family-name:var(--font-fredoka)]">
               Winner: {useGameStore.getState().winnerId ?? "none"}
             </p>
             {/* Scores */}
-            <div className="space-y-1 mb-6">
+            <div className="space-y-1.5 mb-6">
               {gameState &&
                 Object.values(gameState.players)
                   .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
                   .map((p) => (
-                    <div key={p.id} className={`flex items-center gap-2 px-3 py-1.5 rounded text-sm ${p.id === PLAYER_ID ? "bg-cyan-500/10" : "bg-white/5"}`}>
+                    <div key={p.id} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm ${p.id === PLAYER_ID ? "bg-[var(--accent-orange)]/10 border border-[var(--accent-orange)]/20" : "bg-white/5"}`}>
                       <span className={`w-2 h-2 rounded-full ${p.eliminated === 0 ? "bg-green-400" : "bg-red-400"}`} />
-                      <span className="flex-1 text-white text-left truncate">{p.id}</span>
-                      <span className="text-cyan-400 font-bold">{p.score ?? 0}</span>
+                      <span className="flex-1 text-[var(--text-warm)] text-left truncate font-[family-name:var(--font-fredoka)]">{p.id}</span>
+                      <span className="text-[var(--accent-gold)] font-bold font-[family-name:var(--font-fredoka)]">{p.score ?? 0}</span>
                     </div>
                   ))}
             </div>
-            <button onClick={handlePlayAgain} className="w-full py-3 rounded-xl font-bold bg-gradient-to-r from-cyan-500 to-blue-600 text-white">
+            <button onClick={handlePlayAgain} className="game-btn-primary w-full font-[family-name:var(--font-fredoka)]">
               Play Again
             </button>
           </div>
@@ -442,20 +468,26 @@ export default function TestPage() {
       {/* ── Test Controls Panel ── */}
       <div className="absolute top-4 left-4 z-50 flex flex-col gap-2 pointer-events-auto max-w-[220px]">
         {/* Phase badge */}
-        <div className="bg-black/80 backdrop-blur-sm border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
-          <span className="text-[10px] text-white/40 uppercase">Phase</span>
-          <span className="text-xs text-cyan-400 font-mono font-bold">{phase}</span>
+        <div
+          className="backdrop-blur-sm rounded-xl px-3 py-2 flex items-center gap-2"
+          style={{
+            background: "linear-gradient(135deg, rgba(15,13,10,0.85) 0%, rgba(25,20,14,0.85) 100%)",
+            border: "1.5px solid var(--border-warm)",
+          }}
+        >
+          <span className="text-[10px] text-[var(--text-dim)] uppercase font-[family-name:var(--font-fredoka)] font-semibold">Phase</span>
+          <span className="text-xs text-[var(--accent-orange)] font-mono font-bold">{phase}</span>
           {phase === "countdown" && (
-            <span className="text-xs text-yellow-400 font-mono ml-auto">{countdown}s</span>
+            <span className="text-xs text-[var(--accent-gold)] font-mono ml-auto">{countdown}s</span>
           )}
-          <span className="text-[10px] text-white/30 ml-auto">R{currentRound}</span>
+          <span className="text-[10px] text-[var(--text-dim)] ml-auto font-[family-name:var(--font-fredoka)]">R{currentRound}</span>
         </div>
 
         {/* Action buttons */}
         {(phase === "lobby" || phase === "idle") && (
           <button
             onClick={handleStart}
-            className="bg-green-600 hover:bg-green-500 text-white px-4 py-2 rounded-lg font-bold text-sm transition-colors"
+            className="game-btn-green font-[family-name:var(--font-fredoka)] text-sm"
           >
             Start Test Game
           </button>
@@ -463,17 +495,23 @@ export default function TestPage() {
 
         <button
           onClick={handleReset}
-          className="bg-white/10 hover:bg-white/20 text-white/60 px-3 py-1.5 rounded-lg text-xs transition-colors"
+          className="bg-white/5 hover:bg-white/10 border border-[var(--border-warm)] text-[var(--text-muted)] px-3 py-2 rounded-xl text-xs transition-colors font-[family-name:var(--font-fredoka)] font-semibold"
         >
           Reset
         </button>
 
         {/* Log */}
-        <div className="bg-black/80 backdrop-blur-sm border border-white/10 rounded-lg px-3 py-2 max-h-48 overflow-y-auto">
-          <p className="text-[9px] text-white/30 uppercase tracking-widest mb-1">Log</p>
-          {log.length === 0 && <p className="text-[10px] text-white/20">Ready. Click Start.</p>}
+        <div
+          className="backdrop-blur-sm rounded-xl px-3 py-2 max-h-48 overflow-y-auto"
+          style={{
+            background: "linear-gradient(135deg, rgba(15,13,10,0.85) 0%, rgba(25,20,14,0.85) 100%)",
+            border: "1.5px solid var(--border-warm)",
+          }}
+        >
+          <p className="text-[9px] text-[var(--text-dim)] uppercase tracking-widest mb-1 font-[family-name:var(--font-fredoka)] font-semibold">Log</p>
+          {log.length === 0 && <p className="text-[10px] text-[var(--text-dim)] font-[family-name:var(--font-fredoka)]">Ready. Click Start.</p>}
           {log.map((l, i) => (
-            <p key={i} className="text-[10px] text-white/50 leading-tight">
+            <p key={i} className="text-[10px] text-[var(--text-muted)] leading-tight font-[family-name:var(--font-fredoka)]">
               {l}
             </p>
           ))}

@@ -66,6 +66,7 @@ export type ServerEvent =
 export type ClientEvent =
   | "register_player"
   | "register_move"
+  | "update_position"
   | "get_state"
   | "start_game";
 

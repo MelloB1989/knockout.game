@@ -115,6 +115,10 @@ export function registerMove(move: PenguinMove) {
   sendEvent("register_move", move);
 }
 
+export function sendPosition(pos: { x: number; z: number }) {
+  sendEvent("update_position", pos);
+}
+
 export function startGame() {
   sendEvent("start_game");
 }

@@ -3,6 +3,7 @@
 import { useRef, useEffect, useState, Component, type ReactNode } from "react";
 import { useGameStore } from "@/lib/game-store";
 import { skinToGlb, mapToEnvironmentGlb } from "@/lib/constants";
+import { registerMove, sendPosition } from "@/lib/ws";
 
 /* ------------------------------------------------------------------ */
 /*  Babylon.js imports (tree-shakeable ES6)                           */
@@ -105,6 +106,7 @@ interface PenguinTracker {
   lastZ: number;
   lastY: number;
   currentRotY: number;
+  isEliminated: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -172,11 +174,31 @@ class GameScene {
 
   // Loaded GLB caches
   private skinCache: Map<string, AbstractMesh[]> = new Map();
+  private pendingPenguinLoads: Set<string> = new Set();
   private mapBlockTemplate: AbstractMesh[] | null = null;
 
   private playerId: string;
   private disposed = false;
   private lobbyTime = 0;
+  private lastPhase: string = "";
+  private lastMoveSendTime: number = 0;
+  private lastPosSendTime: number = 0;
+
+  // Lobby WASD state
+  private lobbyKeys = { w: false, a: false, s: false, d: false };
+  private lobbyPos: { x: number; z: number } | null = null;
+  private lobbyKeyHandler: ((e: KeyboardEvent) => void) | null = null;
+  private lobbyKeyUpHandler: ((e: KeyboardEvent) => void) | null = null;
+
+  // Map shrinking tracking
+  private renderedMapLength: number = 0;
+  private renderedMapWidth: number = 0;
+
+  // Stage (spectator area from environment GLB)
+  private stageCenter: Vector3 | null = null;
+  private stageHalfX: number = 5;
+  private stageHalfZ: number = 5;
+  private stageY: number = 0.5;
 
   constructor(canvas: HTMLCanvasElement, playerId: string) {
     this.playerId = playerId;
@@ -189,26 +211,28 @@ class GameScene {
 
     // Scene
     this.scene = new Scene(this.engine);
-    this.scene.clearColor = new Color4(0.529, 0.808, 0.922, 1); // #87ceeb
+    this.scene.clearColor = new Color4(0.76, 0.87, 0.94, 1); // soft pastel sky
     this.scene.fogMode = Scene.FOGMODE_LINEAR;
-    this.scene.fogColor = new Color3(0.529, 0.808, 0.922);
-    this.scene.fogStart = 100;
-    this.scene.fogEnd = 350;
-    this.scene.ambientColor = new Color3(0.3, 0.3, 0.35);
+    this.scene.fogColor = new Color3(0.76, 0.87, 0.94);
+    this.scene.fogStart = 80;
+    this.scene.fogEnd = 250;
+    this.scene.ambientColor = new Color3(0.4, 0.4, 0.4);
 
     // Camera
     this.camera = new ArcRotateCamera(
       "cam",
       -Math.PI / 2,
       Math.PI / 3,
-      20,
+      25,
       Vector3.Zero(),
       this.scene
     );
     this.camera.lowerRadiusLimit = 5;
-    this.camera.upperRadiusLimit = 40;
+    this.camera.upperRadiusLimit = 60;
     this.camera.lowerBetaLimit = 0.1;
     this.camera.upperBetaLimit = Math.PI / 2.1;
+    this.camera.minZ = 0.5;  // tighter near plane reduces z-fighting
+    this.camera.maxZ = 300;
     this.camera.attachControl(canvas, true);
     // Disable default panning/keyboard so game controls work
     this.camera.panningSensibility = 0;
@@ -217,32 +241,34 @@ class GameScene {
     this.camera.keysLeft = [];
     this.camera.keysRight = [];
 
-    // Lighting
+    // Lighting — neutral white to preserve GLB material colors
     const hemi = new HemisphericLight("hemi", new Vector3(0, 1, 0), this.scene);
-    hemi.intensity = 1.0;
-    hemi.diffuse = new Color3(0.7, 0.75, 0.85);
-    hemi.groundColor = new Color3(0.53, 0.67, 0.8);
+    hemi.intensity = 0.9;
+    hemi.diffuse = new Color3(0.95, 0.95, 0.97);
+    hemi.groundColor = new Color3(0.7, 0.72, 0.75);
 
     const dir = new DirectionalLight("dir", new Vector3(-1, -2, -1).normalize(), this.scene);
     dir.position = new Vector3(30, 50, 25);
-    dir.intensity = 1.8;
-    dir.diffuse = new Color3(1, 0.98, 0.95);
+    dir.intensity = 1.5;
+    dir.diffuse = new Color3(1, 0.99, 0.96);
 
     // Shadows
     this.shadowGen = new ShadowGenerator(2048, dir);
     this.shadowGen.useBlurExponentialShadowMap = true;
     this.shadowGen.blurKernel = 16;
+    dir.shadowMinZ = 0;
+    dir.shadowMaxZ = 100;
 
     // Water plane
     this.waterPlane = MeshBuilder.CreateGround("water", {
-      width: 400,
-      height: 400,
+      width: 200,
+      height: 200,
     }, this.scene);
     this.waterPlane.position.y = -3;
     const waterMat = new StandardMaterial("waterMat", this.scene);
-    waterMat.diffuseColor = new Color3(0.13, 0.59, 0.95);
-    waterMat.alpha = 0.7;
-    waterMat.specularColor = new Color3(0.3, 0.4, 0.5);
+    waterMat.diffuseColor = new Color3(0.35, 0.6, 0.78);
+    waterMat.alpha = 0.5;
+    waterMat.specularColor = new Color3(0.2, 0.25, 0.3);
     this.waterPlane.material = waterMat;
     this.waterPlane.receiveShadows = true;
 
@@ -262,6 +288,18 @@ class GameScene {
         }
       });
     }
+
+    // Lobby WASD key listeners
+    this.lobbyKeyHandler = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase();
+      if (k in this.lobbyKeys) (this.lobbyKeys as Record<string, boolean>)[k] = true;
+    };
+    this.lobbyKeyUpHandler = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase();
+      if (k in this.lobbyKeys) (this.lobbyKeys as Record<string, boolean>)[k] = false;
+    };
+    window.addEventListener("keydown", this.lobbyKeyHandler);
+    window.addEventListener("keyup", this.lobbyKeyUpHandler);
 
     // Render loop
     this.engine.runRenderLoop(() => {
@@ -283,11 +321,19 @@ class GameScene {
     const gs = useGameStore.getState().gameState;
     if (!gs) return;
 
+    // Mark all player IDs as pending IMMEDIATELY — syncPlayers() runs
+    // every frame during the async loads below, and would create duplicates
+    for (const id of Object.keys(gs.players)) {
+      this.pendingPenguinLoads.add(id);
+    }
+
     // Load map block template
     await this.loadMapBlockTemplate();
 
     // Build tiled platform
     this.buildPlatform(gs.map.length, gs.map.width);
+    this.renderedMapLength = gs.map.length;
+    this.renderedMapWidth = gs.map.width;
 
     // Load environment
     await this.loadEnvironment(gs.map.type);
@@ -349,6 +395,46 @@ class GameScene {
       platform.receiveShadows = true;
       platform.parent = this.platformRoot;
     }
+
+    // Platform edge walls (ice thickness)
+    const halfL = mapLength / 2;
+    const halfW = mapWidth / 2;
+    const edgeH = 2.5;
+    const edgeThickness = 0.6;
+    const edgeMat = new StandardMaterial("edgeMat", this.scene);
+    edgeMat.diffuseColor = new Color3(0.78, 0.9, 0.96);
+    edgeMat.specularColor = new Color3(0.4, 0.45, 0.5);
+    edgeMat.alpha = 0.92;
+
+    const edges = [
+      { name: "edge_n", w: mapLength + edgeThickness, d: edgeThickness, x: 0, z: halfW + edgeThickness / 2 },
+      { name: "edge_s", w: mapLength + edgeThickness, d: edgeThickness, x: 0, z: -halfW - edgeThickness / 2 },
+      { name: "edge_e", w: edgeThickness, d: mapWidth + edgeThickness, x: halfL + edgeThickness / 2, z: 0 },
+      { name: "edge_w", w: edgeThickness, d: mapWidth + edgeThickness, x: -halfL - edgeThickness / 2, z: 0 },
+    ];
+    for (const e of edges) {
+      const wall = MeshBuilder.CreateBox(e.name, {
+        width: e.w, height: edgeH, depth: e.d,
+      }, this.scene);
+      wall.position = new Vector3(e.x, -edgeH / 2 + 0.15, e.z);
+      wall.material = edgeMat;
+      wall.receiveShadows = true;
+      wall.parent = this.platformRoot;
+    }
+
+    // Underside slab (visible ice block depth)
+    const underside = MeshBuilder.CreateBox("platform_under", {
+      width: mapLength + edgeThickness * 2,
+      height: 0.8,
+      depth: mapWidth + edgeThickness * 2,
+    }, this.scene);
+    underside.position.y = -edgeH + 0.55;
+    const undersideMat = new StandardMaterial("undersideMat", this.scene);
+    undersideMat.diffuseColor = new Color3(0.65, 0.82, 0.92);
+    undersideMat.alpha = 0.85;
+    underside.material = undersideMat;
+    underside.receiveShadows = true;
+    underside.parent = this.platformRoot;
   }
 
   private async loadEnvironment(mapType: string) {
@@ -359,8 +445,26 @@ class GameScene {
       for (const m of result.meshes) {
         m.parent = this.environmentRoot;
       }
-      this.environmentRoot.position = new Vector3(0, -8, 0);
-      this.environmentRoot.scaling = new Vector3(3, 3, 3);
+      this.environmentRoot.position = new Vector3(0, 0, 0);
+      this.environmentRoot.scaling = new Vector3(1, 1, 1);
+
+      // Find spectator stage (SpecFloor or SpecBase) for lobby/eliminated positioning
+      const specFloor = result.meshes.find(m =>
+        m.name === "SpecFloor" || m.name === "SpecBase"
+      );
+      if (specFloor) {
+        specFloor.computeWorldMatrix(true);
+        const absPos = specFloor.getAbsolutePosition();
+        this.stageCenter = absPos.clone();
+
+        // Compute stage bounds from bounding box
+        const bb = specFloor.getBoundingInfo().boundingBox;
+        const minW = Vector3.TransformCoordinates(bb.minimum, specFloor.getWorldMatrix());
+        const maxW = Vector3.TransformCoordinates(bb.maximum, specFloor.getWorldMatrix());
+        this.stageY = maxW.y + 0.5; // stand on top surface of the floor
+        this.stageHalfX = Math.abs(maxW.x - minW.x) / 2 - 0.5;
+        this.stageHalfZ = Math.abs(maxW.z - minW.z) / 2 - 0.5;
+      }
     } catch (e) {
       console.warn("Failed to load environment", glbPath, e);
     }
@@ -395,15 +499,21 @@ class GameScene {
       const isCurrentPlayer = id === this.playerId;
       const root = new TransformNode(`penguin_${id}`, this.scene);
 
+      // Position from server (map coordinates → world coordinates)
       const cx = penguin.position.x - mapCenterX;
       const cz = penguin.position.z - mapCenterZ;
-      const y = penguin.eliminated > 0 ? -3 : 0.5;
+      const y = 0.5;
       root.position = new Vector3(cx, y, cz);
 
-      // Clone meshes
+      // Clone meshes — skip meshes whose parent is another template mesh
+      // (they'll be auto-cloned by Mesh.clone), but DO clone meshes parented
+      // to TransformNodes or other non-mesh nodes (not in the template array)
       const clonedMeshes: AbstractMesh[] = [];
+      const templateSet = new Set(templateMeshes);
       for (const orig of templateMeshes) {
         if (!orig.name || orig.name === "__root__") continue;
+        // If parent is another template mesh (not __root__), skip — auto-cloned by parent
+        if (orig.parent && orig.parent.name !== "__root__" && templateSet.has(orig.parent as AbstractMesh)) continue;
         const clone = (orig as Mesh).clone(`${id}_${orig.name}`, root);
         if (!clone) continue;
         clone.setEnabled(true);
@@ -413,6 +523,13 @@ class GameScene {
           this.shadowGen.addShadowCaster(clone);
         }
         clonedMeshes.push(clone);
+        // Enable auto-cloned children
+        for (const child of clone.getChildMeshes(false)) {
+          child.setEnabled(true);
+          child.receiveShadows = true;
+          if (this.shadowGen) this.shadowGen.addShadowCaster(child);
+          clonedMeshes.push(child);
+        }
       }
 
       // Arrow
@@ -454,8 +571,23 @@ class GameScene {
         lastZ: cz,
         lastY: y,
         currentRotY: initRotY,
+        isEliminated: false,
       });
+      this.pendingPenguinLoads.delete(id);
     }
+  }
+
+  /* ── Rebuild platform when map shrinks ── */
+  private rebuildPlatform(newLength: number, newWidth: number) {
+    if (this.platformRoot) {
+      this.platformRoot.getChildMeshes(false).forEach(m => m.dispose());
+      this.platformRoot.dispose();
+      this.platformRoot = null;
+    }
+    this.mapTiles = [];
+    this.buildPlatform(newLength, newWidth);
+    this.renderedMapLength = newLength;
+    this.renderedMapWidth = newWidth;
   }
 
   /* ── Per-frame update ── */
@@ -469,15 +601,101 @@ class GameScene {
     const mapCenterX = gs.map.length / 2;
     const mapCenterZ = gs.map.width / 2;
 
-    // Camera: lobby orbit
+    // Detect map shrink → rebuild platform
+    if (
+      this.renderedMapLength > 0 &&
+      (gs.map.length !== this.renderedMapLength || gs.map.width !== this.renderedMapWidth)
+    ) {
+      this.rebuildPlatform(gs.map.length, gs.map.width);
+    }
+
+    // Reset lobbyPos when leaving lobby
+    if (this.lastPhase === "lobby" && phase !== "lobby") {
+      this.lobbyPos = null;
+    }
+
+    // Lobby phase: WASD movement on the map
     if (phase === "lobby") {
       this.lobbyTime += dt;
-      this.camera.target = Vector3.Zero();
-      this.camera.alpha = -Math.PI / 2 + this.lobbyTime * 0.15;
-      this.camera.beta = Math.PI / 3;
-      this.camera.radius = 28;
-      // Detach controls during lobby orbit
-      return;
+
+      // Initialize lobbyPos from server position
+      if (this.lobbyPos === null) {
+        const myPenguin = gs.players[this.playerId];
+        if (myPenguin) {
+          this.lobbyPos = { x: myPenguin.position.x, z: myPenguin.position.z };
+        } else {
+          this.lobbyPos = { x: gs.map.length / 2, z: gs.map.width / 2 };
+        }
+      }
+
+      const LOBBY_SPEED = 8;
+      const mapLen = gs.map.length;
+      const mapWid = gs.map.width;
+
+      // Camera-relative forward/right in XZ
+      const camAlpha = this.camera.alpha;
+      const fwdX = -Math.cos(camAlpha);
+      const fwdZ = -Math.sin(camAlpha);
+      const rightX = -Math.sin(camAlpha);
+      const rightZ = Math.cos(camAlpha);
+
+      let moveX = 0;
+      let moveZ = 0;
+      if (this.lobbyKeys.w) { moveX += fwdX; moveZ += fwdZ; }
+      if (this.lobbyKeys.s) { moveX -= fwdX; moveZ -= fwdZ; }
+      if (this.lobbyKeys.d) { moveX += rightX; moveZ += rightZ; }
+      if (this.lobbyKeys.a) { moveX -= rightX; moveZ -= rightZ; }
+
+      const len = Math.hypot(moveX, moveZ);
+      if (len > 0) {
+        moveX = (moveX / len) * LOBBY_SPEED * dt;
+        moveZ = (moveZ / len) * LOBBY_SPEED * dt;
+        this.lobbyPos.x = Math.max(1, Math.min(mapLen - 1, this.lobbyPos.x + moveX));
+        this.lobbyPos.z = Math.max(1, Math.min(mapWid - 1, this.lobbyPos.z + moveZ));
+      }
+
+      // Send position to server (throttled to ~10/sec)
+      const now = performance.now();
+      if (len > 0 && now - this.lastPosSendTime > 100) {
+        this.lastPosSendTime = now;
+        sendPosition({ x: this.lobbyPos.x, z: this.lobbyPos.z });
+      }
+
+      // Update current player's tracker
+      const myTracker = this.penguins.get(this.playerId);
+      if (myTracker) {
+        const wx = this.lobbyPos.x - mapCenterX;
+        const wz = this.lobbyPos.z - mapCenterZ;
+        const newPos = new Vector3(wx, 0.5, wz);
+        if (!newPos.equalsWithEpsilon(myTracker.interpTo, 0.01)) {
+          myTracker.interpFrom.copyFrom(myTracker.root.position);
+          myTracker.interpTo.copyFrom(newPos);
+          myTracker.interpT = 0;
+          myTracker.lastX = wx;
+          myTracker.lastZ = wz;
+        }
+        // Face movement direction
+        if (len > 0) {
+          const moveDeg = (Math.atan2(moveZ, moveX) * 180) / Math.PI;
+          myTracker.currentRotY = -(moveDeg * Math.PI / 180) + Math.PI / 2;
+        }
+      }
+
+      // Camera follows player
+      const camTarget = new Vector3(
+        this.lobbyPos.x - mapCenterX,
+        1.5,
+        this.lobbyPos.z - mapCenterZ,
+      );
+      const blend = 1 - Math.exp(-5 * dt);
+      this.camera.target.x += (camTarget.x - this.camera.target.x) * blend;
+      this.camera.target.y += (camTarget.y - this.camera.target.y) * blend;
+      this.camera.target.z += (camTarget.z - this.camera.target.z) * blend;
+      // Soft radius blend — don't force beta so player can look up/down freely
+      const targetRadius = 15;
+      this.camera.radius += (targetRadius - this.camera.radius) * blend * 0.3;
+
+      // Fall through to penguin update loop (no return)
     }
 
     // Update each penguin
@@ -485,9 +703,31 @@ class GameScene {
       const penguin = gs.players[id];
       if (!penguin) continue;
 
+      const isCurrentPlayer = id === this.playerId;
+
+      // During lobby, current player position is driven by WASD above
+      if (phase === "lobby" && isCurrentPlayer) {
+        // Interpolation
+        const INTERP_DURATION = 0.04;
+        if (tracker.interpT < 1) {
+          tracker.interpT = Math.min(1, tracker.interpT + dt / INTERP_DURATION);
+          const t = tracker.interpT * tracker.interpT * (3 - 2 * tracker.interpT);
+          Vector3.LerpToRef(tracker.interpFrom, tracker.interpTo, t, tracker.root.position);
+        } else {
+          const blend = 1 - Math.exp(-10 * dt);
+          tracker.root.position.x += (tracker.interpTo.x - tracker.root.position.x) * blend;
+          tracker.root.position.y += (tracker.interpTo.y - tracker.root.position.y) * blend;
+          tracker.root.position.z += (tracker.interpTo.z - tracker.root.position.z) * blend;
+        }
+        tracker.root.rotation.y = tracker.currentRotY;
+        tracker.arrow.setEnabled(false);
+        continue;
+      }
+
+      // All players use server positions (map coordinates → world)
       const cx = penguin.position.x - mapCenterX;
       const cz = penguin.position.z - mapCenterZ;
-      const y = penguin.eliminated > 0 ? -3 : 0.5;
+      const y = 0.5;
 
       // Detect position change → start interpolation
       if (cx !== tracker.lastX || cz !== tracker.lastZ || y !== tracker.lastY) {
@@ -513,9 +753,26 @@ class GameScene {
         tracker.root.position.z += (tracker.interpTo.z - tracker.root.position.z) * blend;
       }
 
+      // Eliminated player transparency
+      if (penguin.eliminated > 0 && !tracker.isEliminated) {
+        tracker.isEliminated = true;
+        for (const m of tracker.meshes) {
+          if (m.material) {
+            const clonedMat = m.material.clone(`${id}_mat_elim`);
+            if (clonedMat) {
+              clonedMat.alpha = 0.35;
+              if ("needDepthPrePass" in clonedMat) {
+                (clonedMat as unknown as Record<string, unknown>).needDepthPrePass = true;
+              }
+              m.material = clonedMat;
+            }
+          }
+        }
+        tracker.arrow.setEnabled(false);
+      }
+
       // Rotation: penguin model faces +Z. rotation.y = θ maps +Z to (sin(θ), cos(θ))
       // Physics dir 0° = +X → targetRotY = -rad + π/2
-      const isCurrentPlayer = id === this.playerId;
       const dir = isCurrentPlayer && phase === "countdown"
         ? store.aimDirection
         : penguin.direction;
@@ -530,50 +787,75 @@ class GameScene {
       tracker.currentRotY += diff * (1 - Math.exp(-10 * dt));
       tracker.root.rotation.y = tracker.currentRotY;
 
-      // Arrow visibility
-      const showArrow = (phase === "countdown" || phase === "animating") && penguin.eliminated === 0;
-      tracker.arrow.setEnabled(showArrow);
-
-      if (showArrow) {
-        // Scale arrow with power
-        const power = isCurrentPlayer ? store.aimPower : 6;
-        const scale = 0.6 + (power / 10) * 1.5;
-        tracker.arrow.scaling.z = scale;
-        // Bob up and down
-        tracker.arrow.position.y = 2.8 + Math.sin(performance.now() / 333) * 0.1;
+      // Arrow visibility — hide during lobby and for eliminated players
+      if (tracker.isEliminated) {
+        tracker.arrow.setEnabled(false);
+      } else {
+        const showArrow = (phase === "countdown" || phase === "animating") && penguin.eliminated === 0;
+        tracker.arrow.setEnabled(showArrow);
+        if (showArrow) {
+          const power = isCurrentPlayer ? store.aimPower : 6;
+          const scale = 0.6 + (power / 10) * 1.5;
+          tracker.arrow.scaling.z = scale;
+          tracker.arrow.position.y = 2.8 + Math.sin(performance.now() / 333) * 0.1;
+        }
       }
     }
 
-    // Camera follow during gameplay
-    const player = gs.players[this.playerId];
-    if (player && player.eliminated === 0) {
-      const px = player.position.x - mapCenterX;
-      const pz = player.position.z - mapCenterZ;
-      const target = new Vector3(px, 1, pz);
+    // Camera follow during gameplay (skip during lobby — handled above)
+    if (phase !== "lobby") {
+      const player = gs.players[this.playerId];
+      if (player && player.eliminated === 0) {
+        const px = player.position.x - mapCenterX;
+        const pz = player.position.z - mapCenterZ;
+        const target = new Vector3(px, 1, pz);
 
-      const smoothSpeed = phase === "countdown" ? 5 : 3;
-      const blend = 1 - Math.exp(-smoothSpeed * dt);
-      this.camera.target.x += (target.x - this.camera.target.x) * blend;
-      this.camera.target.y += (target.y - this.camera.target.y) * blend;
-      this.camera.target.z += (target.z - this.camera.target.z) * blend;
+        const smoothSpeed = phase === "countdown" ? 5 : 3;
+        const blend = 1 - Math.exp(-smoothSpeed * dt);
+        this.camera.target.x += (target.x - this.camera.target.x) * blend;
+        this.camera.target.y += (target.y - this.camera.target.y) * blend;
+        this.camera.target.z += (target.z - this.camera.target.z) * blend;
 
-      // Alpha follows aim direction during countdown
-      if (phase === "countdown") {
-        const aimRad = (store.aimDirection * Math.PI) / 180;
-        // Camera behind player: alpha = aimRad + π (look from behind)
-        let targetAlpha = aimRad + Math.PI;
-        let alphaDiff = targetAlpha - this.camera.alpha;
-        while (alphaDiff > Math.PI) alphaDiff -= 2 * Math.PI;
-        while (alphaDiff < -Math.PI) alphaDiff += 2 * Math.PI;
-        this.camera.alpha += alphaDiff * (1 - Math.exp(-5 * dt));
+        // During countdown: camera orbit alpha drives aim direction
+        if (phase === "countdown") {
+          // On transition to countdown, snap camera behind player's initial direction
+          if (this.lastPhase !== "countdown") {
+            const initDir = store.aimDirection;
+            this.camera.alpha = (initDir * Math.PI / 180) - Math.PI;
+          }
+
+          // Derive aim direction from camera orbit angle
+          let newAimDir = ((this.camera.alpha + Math.PI) * 180) / Math.PI;
+          newAimDir = ((newAimDir % 360) + 360) % 360;
+
+          const currentAim = store.aimDirection;
+          let aimDiff = newAimDir - currentAim;
+          if (aimDiff > 180) aimDiff -= 360;
+          if (aimDiff < -180) aimDiff += 360;
+
+          if (Math.abs(aimDiff) > 0.3) {
+            store.setAimDirection(newAimDir);
+
+            // Throttle register_move sends to ~20fps
+            const now = Date.now();
+            if (now - this.lastMoveSendTime > 50) {
+              this.lastMoveSendTime = now;
+              try {
+                registerMove({ direction: newAimDir, power: store.aimPower });
+              } catch { /* no websocket in test mode */ }
+            }
+          }
+        }
+      } else {
+        // Spectator: look at center
+        const blend = 1 - Math.exp(-2 * dt);
+        this.camera.target.x += (0 - this.camera.target.x) * blend;
+        this.camera.target.y += (1 - this.camera.target.y) * blend;
+        this.camera.target.z += (0 - this.camera.target.z) * blend;
       }
-    } else {
-      // Spectator: look at center
-      const blend = 1 - Math.exp(-2 * dt);
-      this.camera.target.x += (0 - this.camera.target.x) * blend;
-      this.camera.target.y += (1 - this.camera.target.y) * blend;
-      this.camera.target.z += (0 - this.camera.target.z) * blend;
     }
+
+    this.lastPhase = phase;
 
     // Handle new players joining
     this.syncPlayers(gs);
@@ -582,7 +864,7 @@ class GameScene {
   /* ── Sync players: add new ones that joined mid-game ── */
   private syncPlayers(gs: import("@/lib/types").GameState) {
     for (const id of Object.keys(gs.players)) {
-      if (!this.penguins.has(id)) {
+      if (!this.penguins.has(id) && !this.pendingPenguinLoads.has(id)) {
         // New player appeared — load their penguin
         this.loadPenguinSingle(id, gs).catch(console.warn);
       }
@@ -591,7 +873,8 @@ class GameScene {
 
   private async loadPenguinSingle(id: string, gs: import("@/lib/types").GameState) {
     const penguin = gs.players[id];
-    if (!penguin || this.penguins.has(id)) return;
+    if (!penguin || this.penguins.has(id) || this.pendingPenguinLoads.has(id)) return;
+    this.pendingPenguinLoads.add(id);
 
     const mapCenterX = gs.map.length / 2;
     const mapCenterZ = gs.map.width / 2;
@@ -601,14 +884,18 @@ class GameScene {
 
     const isCurrentPlayer = id === this.playerId;
     const root = new TransformNode(`penguin_${id}`, this.scene);
+
+    const phase = useGameStore.getState().phase;
     const cx = penguin.position.x - mapCenterX;
     const cz = penguin.position.z - mapCenterZ;
-    const y = penguin.eliminated > 0 ? -3 : 0.5;
+    const y = 0.5;
     root.position = new Vector3(cx, y, cz);
 
     const clonedMeshes: AbstractMesh[] = [];
+    const templateSet = new Set(templateMeshes);
     for (const orig of templateMeshes) {
       if (!orig.name || orig.name === "__root__") continue;
+      if (orig.parent && orig.parent.name !== "__root__" && templateSet.has(orig.parent as AbstractMesh)) continue;
       const clone = (orig as Mesh).clone(`${id}_${orig.name}`, root);
       if (!clone) continue;
       clone.setEnabled(true);
@@ -616,6 +903,12 @@ class GameScene {
       clone.receiveShadows = true;
       if (this.shadowGen) this.shadowGen.addShadowCaster(clone);
       clonedMeshes.push(clone);
+      for (const child of clone.getChildMeshes(false)) {
+        child.setEnabled(true);
+        child.receiveShadows = true;
+        if (this.shadowGen) this.shadowGen.addShadowCaster(child);
+        clonedMeshes.push(child);
+      }
     }
 
     const arrowColor = isCurrentPlayer
@@ -637,12 +930,14 @@ class GameScene {
       lastZ: cz,
       lastY: y,
       currentRotY: -rad + Math.PI / 2,
+      isEliminated: false,
     });
+    this.pendingPenguinLoads.delete(id);
   }
-
-  /* ── Cleanup ── */
   dispose() {
     this.disposed = true;
+    if (this.lobbyKeyHandler) window.removeEventListener("keydown", this.lobbyKeyHandler);
+    if (this.lobbyKeyUpHandler) window.removeEventListener("keyup", this.lobbyKeyUpHandler);
     this.engine.stopRenderLoop();
     this.scene.dispose();
     this.engine.dispose();
@@ -662,19 +957,28 @@ export default function GameArena({ playerId }: GameArenaProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sceneRef = useRef<GameScene | null>(null);
 
+  // Create scene when gameState becomes available; guard prevents re-creation
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !gameState || sceneRef.current) return;
+    if (!canvas || sceneRef.current) return;
 
-    const gs = new GameScene(canvas, playerId);
-    sceneRef.current = gs;
-    gs.init().catch(console.error);
+    const gs = useGameStore.getState().gameState;
+    if (!gs) return;
 
-    return () => {
-      gs.dispose();
-      sceneRef.current = null;
-    };
+    const scene = new GameScene(canvas, playerId);
+    sceneRef.current = scene;
+    scene.init().catch(console.error);
   }, [playerId, gameState]);
+
+  // Dispose scene only on unmount
+  useEffect(() => {
+    return () => {
+      if (sceneRef.current) {
+        sceneRef.current.dispose();
+        sceneRef.current = null;
+      }
+    };
+  }, []);
 
   if (!gameState) return null;
 

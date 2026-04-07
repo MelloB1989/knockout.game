@@ -20,8 +20,8 @@ import GameOverOverlay from "@/components/game/GameOverOverlay";
 const GameArena = dynamic(() => import("@/components/game/GameArena"), {
   ssr: false,
   loading: () => (
-    <div className="w-full h-full flex items-center justify-center bg-[#0a0a0f]">
-      <div className="text-white/40 text-sm">Loading 3D arena...</div>
+    <div className="w-full h-full flex items-center justify-center bg-[var(--bg-primary)]">
+      <div className="text-[var(--text-dim)] text-sm font-[family-name:var(--font-fredoka)]">Loading 3D arena...</div>
     </div>
   ),
 });
@@ -84,16 +84,16 @@ export default function GamePage({
   if (!isReady) return null;
 
   return (
-    <div className="fixed inset-0 bg-[#0a0a0f]">
+    <div className="fixed inset-0 bg-[var(--bg-primary)]">
       {/* Loading state while waiting for game state */}
       {phase === "idle" && (
-        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-[#0a0a0f]">
-          <div className="text-2xl font-bold text-white/60 mb-4">Connecting...</div>
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-[var(--bg-primary)]">
+          <div className="text-2xl font-bold text-[var(--text-warm)] mb-4 font-[family-name:var(--font-fredoka)]">Connecting...</div>
           <div className="flex gap-1.5">
             {[0, 1, 2].map((i) => (
               <div
                 key={i}
-                className="w-3 h-3 rounded-full bg-cyan-400 animate-pulse"
+                className="w-3 h-3 rounded-full bg-[var(--accent-orange)] animate-pulse"
                 style={{ animationDelay: `${i * 0.2}s` }}
               />
             ))}

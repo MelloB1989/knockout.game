@@ -5,6 +5,23 @@ import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/auth-store";
 import { useGameStore } from "@/lib/game-store";
 import { ALL_SKINS } from "@/lib/constants";
+import { motion, AnimatePresence } from "framer-motion";
+import dynamic from "next/dynamic";
+
+const PenguinPreview = dynamic(() => import("@/components/ui/PenguinPreview"), { ssr: false });
+
+const SKIN_DATA: Record<string, { name: string; gradient: string; emoji: string; ring: string }> = {
+  default: { name: "Classic", gradient: "from-neutral-500 to-neutral-700", emoji: "🐧", ring: "#6B7280" },
+  icy: { name: "Icy", gradient: "from-gray-300 to-gray-500", emoji: "❄️", ring: "#9CA3AF" },
+  lava: { name: "Lava", gradient: "from-red-500 to-orange-600", emoji: "🔥", ring: "#EF4444" },
+  forest: { name: "Forest", gradient: "from-green-500 to-emerald-700", emoji: "🌿", ring: "#22C55E" },
+  neon: { name: "Neon", gradient: "from-yellow-400 to-amber-500", emoji: "⚡", ring: "#EAB308" },
+  shadow: { name: "Shadow", gradient: "from-neutral-700 to-neutral-900", emoji: "🌑", ring: "#404040" },
+  pink: { name: "Pink", gradient: "from-pink-400 to-rose-500", emoji: "🌸", ring: "#EC4899" },
+  shark: { name: "Shark", gradient: "from-neutral-500 to-neutral-700", emoji: "🦈", ring: "#6B7280" },
+  tuxedo: { name: "Tuxedo", gradient: "from-neutral-800 to-neutral-950", emoji: "🎩", ring: "#262626" },
+  goldking: { name: "Gold King", gradient: "from-yellow-500 to-amber-600", emoji: "👑", ring: "#F59E0B" },
+};
 
 export default function JoinPage() {
   const router = useRouter();
@@ -15,99 +32,152 @@ export default function JoinPage() {
   const [selectedSkin, setSelectedSkin] = useState("default");
 
   useEffect(() => {
-    if (!isReady) {
-      router.replace("/");
-    }
+    if (!isReady) router.replace("/");
   }, [isReady, router]);
 
   const skinKeys = Object.keys(ALL_SKINS);
-  const skinDisplayNames: Record<string, string> = {
-    default: "Classic",
-    icy: "Icy",
-    lava: "Lava",
-    forest: "Forest",
-    neon: "Neon",
-    shadow: "Shadow",
-    pink: "Pink",
-    shark: "Shark",
-    tuxedo: "Tuxedo",
-    goldking: "Gold King",
-  };
+  const skinInfo = SKIN_DATA[selectedSkin] ?? SKIN_DATA["default"]!;
 
   const handleJoin = () => {
     if (!gameCode.trim()) return;
     setGameId(gameCode.trim());
     setIsHost(false);
-    // Store skin choice for the game page to use
     sessionStorage.setItem("selectedSkin", selectedSkin);
     router.push(`/game/${gameCode.trim()}`);
   };
 
   return (
     <main className="min-h-screen flex flex-col items-center relative overflow-hidden">
-      <div className="absolute inset-0 bg-gradient-to-b from-[#0a0a2e] via-[#0a0a0f] to-[#0f0a1a]" />
+      <div className="absolute inset-0 bg-[var(--bg-primary)]" />
+      <div
+        className="absolute inset-0 opacity-40"
+        style={{
+          background: `
+            radial-gradient(ellipse 70% 40% at 50% 0%, rgba(255, 107, 44, 0.06) 0%, transparent 100%),
+            radial-gradient(ellipse 50% 30% at 20% 80%, rgba(255, 184, 0, 0.04) 0%, transparent 100%)
+          `,
+        }}
+      />
 
-      <div className="relative z-10 w-full max-w-md px-4 py-12 flex flex-col gap-8">
-        <button
-          onClick={() => router.push("/")}
-          className="text-white/40 hover:text-white/70 transition-colors self-start text-sm"
-        >
-          &larr; Back
-        </button>
+      <motion.div
+        className="relative z-10 w-full max-w-lg px-4 py-8 flex flex-col gap-8"
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <button
+            onClick={() => router.push("/")}
+            className="text-[var(--text-dim)] hover:text-[var(--text-warm)] transition-colors text-sm font-[family-name:var(--font-fredoka)] font-medium flex items-center gap-1.5"
+          >
+            <span className="text-lg">&larr;</span> Back
+          </button>
+          <h1 className="text-2xl font-[family-name:var(--font-bungee)] text-gradient-warm">
+            KNOCKOUT
+          </h1>
+        </div>
 
-        <h1 className="text-4xl font-black tracking-tight bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent">
-          Join Game
-        </h1>
+        <h2 className="text-3xl font-[family-name:var(--font-fredoka)] font-bold text-[var(--text-warm)]">
+          Join a Game
+        </h2>
 
-        {/* Game Code */}
+        {/* Game Code Input */}
         <div>
-          <label className="block text-xs text-white/40 uppercase tracking-widest mb-2">
+          <label className="block text-xs text-[var(--text-dim)] uppercase tracking-[0.2em] mb-2.5 font-[family-name:var(--font-fredoka)] font-medium">
             Game Code
           </label>
           <input
             type="text"
             value={gameCode}
             onChange={(e) => setGameCode(e.target.value)}
-            maxLength={10}
-            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-4 text-center text-2xl font-mono font-bold text-white tracking-[0.3em] placeholder-white/20 focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/30 transition-all"
-            placeholder="Enter code"
+            maxLength={36}
+            className="w-full bg-[var(--bg-card)] border-2 border-[var(--border-warm)] rounded-xl px-4 py-4 text-center text-2xl font-mono font-bold text-[var(--text-warm)] tracking-[0.15em] placeholder-[var(--text-dim)] focus:outline-none focus:border-[var(--accent-orange)]/40 focus:shadow-[0_0_20px_rgba(255,107,44,0.15)] transition-all"
+            placeholder="Paste game code"
             autoFocus
           />
         </div>
 
         {/* Skin Selection */}
         <section>
-          <h2 className="text-xs text-white/40 uppercase tracking-widest mb-3">
-            Choose Your Penguin
-          </h2>
-          <div className="grid grid-cols-5 gap-2">
-            {skinKeys.map((skin) => (
-              <button
-                key={skin}
-                onClick={() => setSelectedSkin(skin)}
-                className={`aspect-square rounded-xl border flex flex-col items-center justify-center gap-1 transition-all ${
-                  selectedSkin === skin
-                    ? "border-cyan-500/60 bg-cyan-500/10 scale-110 shadow-lg shadow-cyan-500/10"
-                    : "border-white/10 bg-white/5 hover:bg-white/8 hover:border-white/20"
-                }`}
+          <h3 className="text-lg font-[family-name:var(--font-fredoka)] font-semibold text-[var(--text-warm)] mb-4 flex items-center gap-2">
+            <span className="text-xl">🐧</span> Choose Your Penguin
+          </h3>
+
+          <div className="flex flex-col items-center gap-4">
+            {/* Preview */}
+            <div
+              className="rounded-2xl overflow-hidden border-2 transition-all duration-300"
+              style={{
+                borderColor: skinInfo.ring + "60",
+                boxShadow: `0 0 30px ${skinInfo.ring}20`,
+                background: "linear-gradient(135deg, #1C1814 0%, #0F0D0A 100%)",
+              }}
+            >
+              <PenguinPreview skin={selectedSkin} width={200} height={240} />
+            </div>
+            <AnimatePresence mode="wait">
+              <motion.p
+                key={selectedSkin}
+                className="text-base font-[family-name:var(--font-fredoka)] font-semibold text-[var(--text-warm)] flex items-center gap-2"
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -4 }}
+                transition={{ duration: 0.2 }}
               >
-                <div className="w-5 h-5 rounded-full bg-gradient-to-b from-white/20 to-white/5" />
-                <span className="text-[9px] text-white/50">
-                  {skinDisplayNames[skin] || skin}
-                </span>
-              </button>
-            ))}
+                <span>{skinInfo.emoji}</span> {skinInfo.name}
+              </motion.p>
+            </AnimatePresence>
+
+            {/* Grid */}
+            <div className="grid grid-cols-5 gap-2.5 w-full">
+              {skinKeys.map((skin) => {
+                const info = SKIN_DATA[skin] ?? SKIN_DATA["default"]!;
+                const isSelected = selectedSkin === skin;
+                return (
+                  <motion.button
+                    key={skin}
+                    onClick={() => setSelectedSkin(skin)}
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    className={`relative aspect-square rounded-xl border-2 flex flex-col items-center justify-center gap-1 transition-all ${
+                      isSelected
+                        ? "card-selected bg-[var(--bg-card-hover)]"
+                        : "border-[var(--border-warm)] bg-[var(--bg-card)] hover:border-[var(--accent-gold)]/30 hover:bg-[var(--bg-card-hover)]"
+                    }`}
+                  >
+                    <div className={`w-7 h-7 rounded-full bg-gradient-to-br ${info.gradient} flex items-center justify-center text-sm`}>
+                      {info.emoji}
+                    </div>
+                    <span className="text-[9px] font-[family-name:var(--font-fredoka)] font-medium text-[var(--text-muted)]">
+                      {info.name}
+                    </span>
+                    {isSelected && (
+                      <motion.div
+                        className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-[var(--accent-orange)] flex items-center justify-center"
+                        layoutId="skin-check-join"
+                      >
+                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                          <path d="M2 5L4 7L8 3" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      </motion.div>
+                    )}
+                  </motion.button>
+                );
+              })}
+            </div>
           </div>
         </section>
 
+        {/* Join Button */}
         <button
           onClick={handleJoin}
           disabled={!gameCode.trim()}
-          className="w-full py-4 rounded-xl font-bold text-lg bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-lg shadow-cyan-500/25 hover:shadow-cyan-500/40 hover:scale-[1.01] active:scale-[0.99] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          className="game-btn-green w-full font-[family-name:var(--font-fredoka)] text-xl"
         >
           Join Game
         </button>
-      </div>
+      </motion.div>
     </main>
   );
 }

@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/auth-store";
+import { motion } from "framer-motion";
 
 const ADJECTIVES = ["Swift", "Fierce", "Icy", "Mighty", "Shadow", "Turbo", "Sneaky", "Bold"];
 const NOUNS = ["Penguin", "Slider", "Dasher", "Glider", "Chiller", "Brawler", "Drifter"];
@@ -12,6 +13,40 @@ function randomName() {
   const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
   const num = Math.floor(Math.random() * 100);
   return `${adj}${noun}${num}`;
+}
+
+// Floating particle component
+function Particles() {
+  const particles = useMemo(() =>
+    Array.from({ length: 30 }, (_, i) => ({
+      id: i,
+      left: `${Math.random() * 100}%`,
+      size: 3 + Math.random() * 5,
+      duration: 8 + Math.random() * 12,
+      delay: Math.random() * 10,
+      color: Math.random() > 0.5
+        ? `rgba(255, 107, 44, ${0.3 + Math.random() * 0.4})`
+        : `rgba(255, 184, 0, ${0.2 + Math.random() * 0.3})`,
+    })), []);
+
+  return (
+    <div className="absolute inset-0 overflow-hidden pointer-events-none">
+      {particles.map((p) => (
+        <div
+          key={p.id}
+          className="absolute rounded-full"
+          style={{
+            left: p.left,
+            bottom: "-20px",
+            width: p.size,
+            height: p.size,
+            backgroundColor: p.color,
+            animation: `float-particle ${p.duration}s ${p.delay}s linear infinite`,
+          }}
+        />
+      ))}
+    </div>
+  );
 }
 
 export default function Home() {
@@ -55,74 +90,131 @@ export default function Home() {
 
   return (
     <main className="min-h-screen flex flex-col items-center justify-center relative overflow-hidden">
-      {/* Animated background */}
-      <div className="absolute inset-0 bg-gradient-to-b from-[#0a0a2e] via-[#0a0a0f] to-[#0f0a1a]" />
-      <div className="absolute inset-0 opacity-20">
-        {Array.from({ length: 12 }).map((_, i) => (
-          <div
-            key={i}
-            className="absolute rounded-full bg-cyan-500/20 animate-pulse"
-            style={{
-              width: `${20 + (i * 7) % 40}px`,
-              height: `${20 + (i * 11) % 40}px`,
-              left: `${(i * 17) % 100}%`,
-              top: `${(i * 23) % 100}%`,
-              animationDelay: `${(i * 0.4) % 3}s`,
-              animationDuration: `${2 + (i * 0.3) % 3}s`,
-            }}
-          />
-        ))}
-      </div>
+      {/* Background gradient */}
+      <div className="absolute inset-0 bg-[#0F0D0A]" />
+      <div
+        className="absolute inset-0 opacity-60"
+        style={{
+          background: `
+            radial-gradient(ellipse 80% 50% at 50% 0%, rgba(255, 107, 44, 0.08) 0%, transparent 100%),
+            radial-gradient(ellipse 60% 40% at 30% 80%, rgba(255, 184, 0, 0.05) 0%, transparent 100%),
+            radial-gradient(ellipse 50% 30% at 80% 60%, rgba(46, 204, 113, 0.04) 0%, transparent 100%)
+          `,
+        }}
+      />
 
-      <div className="relative z-10 flex flex-col items-center gap-8 px-4">
-        <div className="text-center">
-          <h1 className="text-7xl font-black tracking-tighter bg-gradient-to-r from-cyan-400 via-blue-500 to-purple-600 bg-clip-text text-transparent drop-shadow-2xl">
+      <Particles />
+
+      {/* Content */}
+      <motion.div
+        className="relative z-10 flex flex-col items-center gap-10 px-4"
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.6, ease: "easeOut" }}
+      >
+        {/* Penguin decorations */}
+        <motion.div
+          className="flex gap-3 text-4xl select-none"
+          initial={{ opacity: 0, scale: 0.5 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: 0.2, duration: 0.5, type: "spring", bounce: 0.5 }}
+        >
+          <span className="animate-bounce" style={{ animationDelay: "0s", animationDuration: "2s" }}>🐧</span>
+          <span className="animate-bounce" style={{ animationDelay: "0.3s", animationDuration: "2.2s" }}>🐧</span>
+          <span className="animate-bounce" style={{ animationDelay: "0.6s", animationDuration: "1.8s" }}>🐧</span>
+        </motion.div>
+
+        {/* Title */}
+        <motion.div
+          className="text-center"
+          initial={{ opacity: 0, scale: 0.8 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: 0.1, duration: 0.5, type: "spring", bounce: 0.3 }}
+        >
+          <h1
+            className="text-8xl sm:text-9xl font-[family-name:var(--font-bungee)] text-gradient-warm title-3d leading-none"
+          >
             KNOCKOUT
           </h1>
-          <p className="text-lg text-white/50 mt-2 font-medium tracking-wide">
-            PENGUIN BATTLE ROYALE
+          <p className="text-sm sm:text-base text-[var(--text-muted)] mt-3 font-[family-name:var(--font-fredoka)] font-medium tracking-[0.25em] uppercase">
+            Penguin Battle Royale
           </p>
-        </div>
+        </motion.div>
 
-        <div className="w-full max-w-xs">
-          <label className="block text-xs text-white/40 uppercase tracking-widest mb-2 text-center">
+        {/* Name input */}
+        <motion.div
+          className="w-full max-w-sm"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.3, duration: 0.4 }}
+        >
+          <label className="block text-xs text-[var(--text-dim)] uppercase tracking-[0.2em] mb-2.5 text-center font-[family-name:var(--font-fredoka)] font-medium">
             Your Name
           </label>
-          <input
-            type="text"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            maxLength={20}
-            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-center text-lg font-semibold text-white placeholder-white/20 focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/30 transition-all"
-            placeholder="Enter name..."
-          />
-        </div>
+          <div className="relative">
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              maxLength={20}
+              className="w-full bg-[var(--bg-card)] border-2 border-[var(--border-warm)] rounded-xl px-4 py-3.5 text-center text-lg font-semibold text-[var(--text-warm)] placeholder-[var(--text-dim)] focus:outline-none focus:border-[var(--accent-orange)]/40 focus:shadow-[0_0_20px_rgba(255,107,44,0.15)] transition-all font-[family-name:var(--font-fredoka)]"
+              placeholder="Enter name..."
+            />
+            <button
+              type="button"
+              onClick={() => setUsername(randomName())}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-xl hover:scale-110 active:scale-95 transition-transform"
+              title="Random name"
+            >
+              🎲
+            </button>
+          </div>
+        </motion.div>
 
-        <div className="flex flex-col gap-3 w-full max-w-xs">
+        {/* Action buttons */}
+        <motion.div
+          className="flex flex-col sm:flex-row gap-4 w-full max-w-sm"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.45, duration: 0.4 }}
+        >
           <button
             onClick={handleCreate}
             disabled={loading || !username.trim()}
-            className="group relative w-full py-4 rounded-xl font-bold text-lg bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-lg shadow-cyan-500/25 hover:shadow-cyan-500/40 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed overflow-hidden"
+            className="game-btn-primary flex-1 font-[family-name:var(--font-fredoka)]"
           >
-            <span className="relative z-10">
-              {loading ? "Connecting..." : "Create Game"}
-            </span>
-            <div className="absolute inset-0 bg-gradient-to-r from-cyan-400 to-blue-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+            {loading ? "Connecting..." : "Create Game"}
           </button>
 
           <button
             onClick={handleJoin}
             disabled={loading || !username.trim()}
-            className="group relative w-full py-4 rounded-xl font-bold text-lg bg-white/5 border border-white/10 text-white hover:bg-white/10 hover:border-white/20 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            className="game-btn-secondary flex-1 font-[family-name:var(--font-fredoka)]"
           >
             {loading ? "Connecting..." : "Join Game"}
           </button>
-        </div>
+        </motion.div>
 
         {error && (
-          <p className="text-red-400 text-sm animate-pulse">{error}</p>
+          <motion.p
+            className="text-[var(--accent-red)] text-sm font-medium"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+          >
+            {error}
+          </motion.p>
         )}
-      </div>
+
+        {/* Footer */}
+        <motion.p
+          className="text-[var(--text-dim)] text-xs mt-4"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 0.6 }}
+          transition={{ delay: 0.8 }}
+        >
+          Last penguin standing wins
+        </motion.p>
+      </motion.div>
     </main>
   );
 }
