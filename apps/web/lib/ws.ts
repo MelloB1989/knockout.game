@@ -14,6 +14,9 @@ import { API_BASE } from "./constants";
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingRegistration: Partial<Penguin> | null = null;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
+let intentionalClose = false;
 
 function getWsBase() {
   const base = API_BASE.replace(/^http/, "ws");
@@ -33,9 +36,11 @@ export function connectToGame(gameId: string, token: string) {
   }
 
   const url = `${getWsBase()}/v1/game/ws/${gameId}?token=${encodeURIComponent(token)}`;
+  intentionalClose = false;
   ws = new WebSocket(url);
 
   ws.onopen = () => {
+    reconnectAttempts = 0;
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -62,9 +67,9 @@ export function connectToGame(gameId: string, token: string) {
   };
 
   ws.onclose = () => {
-    // Don't reconnect if game ended or deliberately disconnected
     const phase = useGameStore.getState().phase;
-    if (phase !== "ended" && ws !== null) {
+    if (!intentionalClose && phase !== "ended" && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      reconnectAttempts++;
       reconnectTimer = setTimeout(() => {
         connectToGame(gameId, token);
       }, 2000);
@@ -77,16 +82,18 @@ export function connectToGame(gameId: string, token: string) {
 }
 
 export function disconnectFromGame() {
+  intentionalClose = true;
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
   if (ws) {
-    ws.onclose = null; // prevent reconnect
+    ws.onclose = null;
     ws.close();
     ws = null;
   }
   pendingRegistration = null;
+  reconnectAttempts = 0;
 }
 
 export function sendEvent(event: string, data?: unknown) {

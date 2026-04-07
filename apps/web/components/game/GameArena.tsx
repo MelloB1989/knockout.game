@@ -133,7 +133,7 @@ function Platform({ length, width, mapType }: PlatformProps) {
       </mesh>
       {/* Grid pattern on platform */}
       <gridHelper
-        args={[Math.max(length, width), Math.max(length, width), "#ffffff10", "#ffffff08"]}
+        args={[Math.max(length, width), Math.max(length, width), 0x333333, 0x222222]}
         position={[length / 2, 0.03, width / 2]}
       />
       {/* Danger zone edge glow */}
@@ -193,7 +193,7 @@ export default function GameArena({ playerId }: GameArenaProps) {
 
   return (
     <Canvas
-      shadows
+      shadows={{ type: THREE.PCFShadowMap }}
       camera={{ position: [20, 18, 25], fov: 50, near: 0.1, far: 200 }}
       className="w-full h-full"
       style={{ background: "#0a0a0f" }}
