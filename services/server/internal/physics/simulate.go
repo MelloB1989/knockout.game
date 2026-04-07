@@ -32,11 +32,21 @@ func CreateGameState(mapType string, l, w int) *GameState {
 	}
 }
 
+// TickCallback is called after each simulation tick with the current player positions.
+type TickCallback func(players map[string]entities.Penguin)
+
 func (gs *GameState) PlayMoves() []entities.PenguinMove {
+	return gs.PlayMovesWithCallback(nil)
+}
+
+func (gs *GameState) PlayMovesWithCallback(onTick TickCallback) []entities.PenguinMove {
 	moves := gs.ApplyMoves()
 	for {
 		if gs.SimulateTick(defaultDT) {
 			break
+		}
+		if onTick != nil {
+			onTick(gs.Players)
 		}
 	}
 	gs.EndRound()

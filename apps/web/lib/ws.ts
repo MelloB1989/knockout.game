@@ -49,8 +49,8 @@ export function connectToGame(gameId: string, token: string) {
     if (pendingRegistration) {
       sendEvent("register_player", pendingRegistration);
       pendingRegistration = null;
-      // Request full game state after a brief delay to let registration process
-      setTimeout(() => sendEvent("get_state"), 200);
+      // Delay get_state to allow remote Redis write to propagate
+      setTimeout(() => sendEvent("get_state"), 1000);
     } else {
       // Already registered (e.g. host) — just fetch state
       sendEvent("get_state");
@@ -104,7 +104,7 @@ export function sendEvent(event: string, data?: unknown) {
 export function registerPlayer(player: Partial<Penguin>) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     sendEvent("register_player", player);
-    setTimeout(() => sendEvent("get_state"), 200);
+    setTimeout(() => sendEvent("get_state"), 1000);
   } else {
     // Queue for when WS opens
     pendingRegistration = player;
@@ -160,6 +160,13 @@ function handleServerEvent(msg: OutgoingMessage) {
     }
     case "player_move_ack": {
       store.handleMoveAck();
+      break;
+    }
+    case "players_position_update": {
+      const gs = msg.data as GameState;
+      if (gs) {
+        store.handlePositionUpdate(gs);
+      }
       break;
     }
     case "error": {

@@ -65,6 +65,12 @@ type moveAckPayload struct {
 var runningGames sync.Map
 
 func WSHandler(c *websocket.Conn) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[ws] panic recovered: %v", r)
+			c.Close()
+		}
+	}()
 	playerId, playerSecret, gameId := middlewares.GetPlayerIdWS(c), middlewares.GetPlayerSecretWS(c), c.Params("gameId")
 
 	var writeMu sync.Mutex
@@ -140,7 +146,7 @@ func WSHandler(c *websocket.Conn) {
 			}
 
 			var data any
-			if event.Type == repository.GameState && event.GameState != nil {
+			if event.GameState != nil && (event.Type == repository.GameState || event.Type == repository.PlayersPositionUpdate) {
 				data = maskGameStateForPlayer(event.GameState, playerId)
 			} else if len(event.Data) > 0 {
 				data = event.Data
@@ -407,6 +413,11 @@ func startGameLoop(gameId string) {
 
 	go func() {
 		defer runningGames.Delete(gameId)
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[%s] game loop panic recovered: %v", gameId, r)
+			}
+		}()
 		for {
 			game, err := repository.LoadGame(gameId)
 			if err != nil || game.GameState == nil {
@@ -444,7 +455,15 @@ func startGameLoop(gameId string) {
 
 			round = game.GameState.CurrentRound
 			movesSnapshot := copyMoves(game.GameState.CurrentMoves)
-			game.GameState.PlayMoves()
+
+			// Stream position updates during simulation at ~20fps
+			// SimulateTick is pure math (no real-time delay), so we add a small
+			// sleep to spread updates over time for smooth frontend animation.
+			const posPublishInterval = 50 * time.Millisecond
+			game.GameState.PlayMovesWithCallback(func(players map[string]entities.Penguin) {
+				_ = game.PublishEvent(repository.PlayersPositionUpdate, nil, game.GameState)
+				time.Sleep(posPublishInterval)
+			})
 
 			if _, err := game.UpdateGame(); err != nil {
 				return

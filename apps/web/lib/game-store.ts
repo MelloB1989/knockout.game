@@ -47,6 +47,7 @@ interface GameStore {
   handlePlayerEliminated: (payload: PlayerEliminatedPayload) => void;
   handleGameEnded: (payload: GameEndedPayload, gs: GameState | null) => void;
   handleMoveAck: () => void;
+  handlePositionUpdate: (gs: GameState) => void;
 
   setPendingMove: (move: PenguinMove | null) => void;
   submitMove: () => PenguinMove | null;
@@ -138,6 +139,19 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   handleMoveAck: () => {
     set({ moveSubmitted: true });
+  },
+
+  handlePositionUpdate: (gs) => {
+    const positions: Record<string, { x: number; z: number }> = {};
+    if (gs?.players) {
+      for (const [id, p] of Object.entries(gs.players)) {
+        positions[id] = { x: p.position.x, z: p.position.z };
+      }
+    }
+    set({
+      gameState: gs,
+      animatedPositions: positions,
+    });
   },
 
   setPendingMove: (move) => set({ pendingMove: move }),

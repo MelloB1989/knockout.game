@@ -1,8 +1,8 @@
 "use client";
 
 import { useRef } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
-import { useGLTF, Environment } from "@react-three/drei";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import { useGameStore } from "@/lib/game-store";
 import { skinToGlb } from "@/lib/constants";
@@ -184,6 +184,17 @@ interface GameArenaProps {
   playerId: string;
 }
 
+const darkBg = new THREE.Color("#0a0a0f");
+
+function SceneBackground() {
+  const { scene, gl } = useThree();
+  useFrame(() => {
+    scene.background = darkBg;
+    gl.setClearColor(0x0a0a0f, 1);
+  });
+  return null;
+}
+
 export default function GameArena({ playerId }: GameArenaProps) {
   const gameState = useGameStore((s) => s.gameState);
 
@@ -192,17 +203,22 @@ export default function GameArena({ playerId }: GameArenaProps) {
   const players = Object.values(gameState.players);
 
   return (
+    <div style={{ position: "absolute", top: 0, left: 0, width: "100vw", height: "100vh" }}>
     <Canvas
       shadows={{ type: THREE.PCFShadowMap }}
       camera={{ position: [20, 18, 25], fov: 50, near: 0.1, far: 200 }}
-      className="w-full h-full"
-      style={{ background: "#0a0a0f" }}
+      gl={{ alpha: false, antialias: true, powerPreference: "high-performance" }}
+      onCreated={({ scene, gl }) => {
+        scene.background = new THREE.Color(0x0a0a0f);
+        gl.setClearColor(0x0a0a0f, 1);
+      }}
     >
+
       {/* Lighting */}
-      <ambientLight intensity={0.4} />
+      <ambientLight intensity={0.6} />
       <directionalLight
         position={[20, 30, 20]}
-        intensity={1.2}
+        intensity={1.4}
         castShadow
         shadow-mapSize-width={2048}
         shadow-mapSize-height={2048}
@@ -242,8 +258,8 @@ export default function GameArena({ playerId }: GameArenaProps) {
         />
       ))}
 
-      {/* Environment */}
-      <Environment preset="night" />
+      <SceneBackground />
     </Canvas>
+    </div>
   );
 }
