@@ -34,7 +34,7 @@ export default function GamePage({
   const { gameId } = use(params);
   const router = useRouter();
   const { token, playerId, playerSecret, isReady, username } = useAuthStore();
-  const { phase, setGameId, setIsHost, reset } = useGameStore();
+  const { phase, gameState, setGameId, setIsHost, reset } = useGameStore();
   const connectedRef = useRef(false);
 
   useEffect(() => {
@@ -45,28 +45,27 @@ export default function GamePage({
 
     setGameId(gameId);
 
+    // Prevent double-connect from React strict mode
     if (connectedRef.current) return;
     connectedRef.current = true;
 
-    // Connect websocket
+    const skin =
+      (typeof window !== "undefined" &&
+        sessionStorage.getItem("selectedSkin")) ||
+      "default";
+
+    // Queue registration before connecting — ws.ts will send it on open
+    registerPlayer({
+      id: playerId,
+      skin,
+      player_secret: playerSecret || "",
+      position: { x: 0, z: 0 },
+    });
+
+    // Connect websocket (will register + get_state on open)
     connectToGame(gameId, token);
 
-    // Register player after small delay for WS to open
-    const timer = setTimeout(() => {
-      const skin =
-        (typeof window !== "undefined" &&
-          sessionStorage.getItem("selectedSkin")) ||
-        "default";
-      registerPlayer({
-        id: playerId,
-        skin,
-        player_secret: playerSecret || "",
-        position: { x: 0, z: 0 }, // Server will assign position
-      });
-    }, 500);
-
     return () => {
-      clearTimeout(timer);
       disconnectFromGame();
       connectedRef.current = false;
     };
@@ -85,6 +84,22 @@ export default function GamePage({
 
   return (
     <div className="fixed inset-0 bg-[#0a0a0f]">
+      {/* Loading state while waiting for game state */}
+      {phase === "idle" && (
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-[#0a0a0f]">
+          <div className="text-2xl font-bold text-white/60 mb-4">Connecting...</div>
+          <div className="flex gap-1.5">
+            {[0, 1, 2].map((i) => (
+              <div
+                key={i}
+                className="w-3 h-3 rounded-full bg-cyan-400 animate-pulse"
+                style={{ animationDelay: `${i * 0.2}s` }}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 3D Arena (full screen) */}
       <GameArena playerId={playerId || ""} />
 

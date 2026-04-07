@@ -13,6 +13,7 @@ import { API_BASE } from "./constants";
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingRegistration: Partial<Penguin> | null = null;
 
 function getWsBase() {
   const base = API_BASE.replace(/^http/, "ws");
@@ -20,8 +21,15 @@ function getWsBase() {
 }
 
 export function connectToGame(gameId: string, token: string) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
+  // Close any existing connection cleanly
+  if (ws) {
+    ws.onclose = null; // prevent reconnect loop from old socket
     ws.close();
+    ws = null;
+  }
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
   }
 
   const url = `${getWsBase()}/v1/game/ws/${gameId}?token=${encodeURIComponent(token)}`;
@@ -31,6 +39,16 @@ export function connectToGame(gameId: string, token: string) {
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
+    }
+    // If we have a pending registration, send it now then request state
+    if (pendingRegistration) {
+      sendEvent("register_player", pendingRegistration);
+      pendingRegistration = null;
+      // Request full game state after a brief delay to let registration process
+      setTimeout(() => sendEvent("get_state"), 200);
+    } else {
+      // Already registered (e.g. host) — just fetch state
+      sendEvent("get_state");
     }
   };
 
@@ -44,9 +62,9 @@ export function connectToGame(gameId: string, token: string) {
   };
 
   ws.onclose = () => {
-    // Don't reconnect if game ended
+    // Don't reconnect if game ended or deliberately disconnected
     const phase = useGameStore.getState().phase;
-    if (phase !== "ended") {
+    if (phase !== "ended" && ws !== null) {
       reconnectTimer = setTimeout(() => {
         connectToGame(gameId, token);
       }, 2000);
@@ -64,9 +82,11 @@ export function disconnectFromGame() {
     reconnectTimer = null;
   }
   if (ws) {
+    ws.onclose = null; // prevent reconnect
     ws.close();
     ws = null;
   }
+  pendingRegistration = null;
 }
 
 export function sendEvent(event: string, data?: unknown) {
@@ -75,7 +95,13 @@ export function sendEvent(event: string, data?: unknown) {
 }
 
 export function registerPlayer(player: Partial<Penguin>) {
-  sendEvent("register_player", player);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    sendEvent("register_player", player);
+    setTimeout(() => sendEvent("get_state"), 200);
+  } else {
+    // Queue for when WS opens
+    pendingRegistration = player;
+  }
 }
 
 export function registerMove(move: PenguinMove) {
