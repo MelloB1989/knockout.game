@@ -6,7 +6,7 @@ export default function GameHUD() {
   const { gameState, phase, currentRound, eliminatedThisRound, roundMoves } =
     useGameStore();
 
-  if (!gameState || phase === "lobby" || phase === "ended") return null;
+  if (!gameState || phase === "lobby" || phase === "ended" || phase === "countdown") return null;
 
   const players = Object.values(gameState.players);
   const alive = players.filter((p) => p.eliminated === 0);

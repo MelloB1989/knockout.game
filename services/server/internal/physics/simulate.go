@@ -282,9 +282,9 @@ func (gs *GameState) shrinkMap() {
 func (gs *GameState) EndRound() {
 	if gs.roundEliminated {
 		gs.shrinkMap()
-		gs.CurrentRound++
 		gs.roundEliminated = false
 	}
+	gs.CurrentRound++
 }
 
 func (gs *GameState) getAccel(playerId string) float64 {

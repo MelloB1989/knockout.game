@@ -5,8 +5,7 @@ import { useGameStore } from "@/lib/game-store";
 import { registerMove } from "@/lib/ws";
 
 const POWER_LEVELS = [2, 4, 6, 8, 10];
-const POWER_LABELS = ["Tap", "Light", "Med", "Strong", "MAX"];
-const POWER_COLORS = ["#22d3ee", "#06b6d4", "#eab308", "#f97316", "#ef4444"];
+const MAX_SLOTS = 10; // visual power slots
 
 /** Degrees rotated per pixel of horizontal drag */
 const SENSITIVITY = 0.4;
@@ -14,22 +13,35 @@ const SENSITIVITY = 0.4;
 export default function GameControls() {
   const phase = useGameStore((s) => s.phase);
   const countdown = useGameStore((s) => s.countdown);
-  const totalCountdown = useGameStore((s) => s.totalCountdown);
   const moveSubmitted = useGameStore((s) => s.moveSubmitted);
   const currentRound = useGameStore((s) => s.currentRound);
-  const aimDirection = useGameStore((s) => s.aimDirection);
   const aimPower = useGameStore((s) => s.aimPower);
 
   const dragging = useRef(false);
   const lastX = useRef(0);
 
   const powerIndex = POWER_LEVELS.indexOf(aimPower);
+  // Map power level to filled slots (2→2, 4→4, 6→6, 8→8, 10→10)
+  const filledSlots = aimPower;
 
   /* ── Submit move ── */
   const handleSubmit = useCallback(() => {
     if (moveSubmitted) return;
     const move = useGameStore.getState().submitMove();
     if (move) registerMove(move);
+  }, [moveSubmitted]);
+
+  /* ── Power cycling with Q/E keys or tap ── */
+  const decreasePower = useCallback(() => {
+    if (moveSubmitted) return;
+    const idx = POWER_LEVELS.indexOf(useGameStore.getState().aimPower);
+    if (idx > 0) useGameStore.getState().setAimPower(POWER_LEVELS[idx - 1]!);
+  }, [moveSubmitted]);
+
+  const increasePower = useCallback(() => {
+    if (moveSubmitted) return;
+    const idx = POWER_LEVELS.indexOf(useGameStore.getState().aimPower);
+    if (idx < POWER_LEVELS.length - 1) useGameStore.getState().setAimPower(POWER_LEVELS[idx + 1]!);
   }, [moveSubmitted]);
 
   /* ── Drag-to-rotate handlers ── */
@@ -48,7 +60,6 @@ export default function GameControls() {
     lastX.current = clientX;
     const store = useGameStore.getState();
     let newDir = store.aimDirection + dx * SENSITIVITY;
-    // Normalize 0-360
     newDir = ((newDir % 360) + 360) % 360;
     store.setAimDirection(newDir);
   }, []);
@@ -57,7 +68,7 @@ export default function GameControls() {
     dragging.current = false;
   }, []);
 
-  /* ── Global pointer listeners for drag ── */
+  /* ── Global pointer + keyboard listeners ── */
   useEffect(() => {
     if (phase !== "countdown") return;
 
@@ -75,13 +86,22 @@ export default function GameControls() {
     };
     const handleTouchEnd = () => onDragEnd();
 
-    // Attach to window so dragging works even outside UI elements
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "q" || e.key === "Q") decreasePower();
+      if (e.key === "e" || e.key === "E") increasePower();
+      if (e.key === " " || e.key === "Enter") {
+        e.preventDefault();
+        handleSubmit();
+      }
+    };
+
     window.addEventListener("mousedown", handleMouseDown);
     window.addEventListener("mousemove", handleMouseMove);
     window.addEventListener("mouseup", handleMouseUp);
     window.addEventListener("touchstart", handleTouchStart, { passive: true });
     window.addEventListener("touchmove", handleTouchMove, { passive: true });
     window.addEventListener("touchend", handleTouchEnd);
+    window.addEventListener("keydown", handleKeyDown);
 
     return () => {
       window.removeEventListener("mousedown", handleMouseDown);
@@ -90,36 +110,26 @@ export default function GameControls() {
       window.removeEventListener("touchstart", handleTouchStart);
       window.removeEventListener("touchmove", handleTouchMove);
       window.removeEventListener("touchend", handleTouchEnd);
+      window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [phase, onDragStart, onDragMove, onDragEnd]);
+  }, [phase, onDragStart, onDragMove, onDragEnd, decreasePower, increasePower, handleSubmit]);
 
   if (phase !== "countdown") return null;
 
-  const countdownPct = totalCountdown > 0 ? countdown / totalCountdown : 0;
-
   return (
     <div className="absolute inset-0 z-20 pointer-events-none flex flex-col justify-between">
-      {/* ── Top: Countdown bar ── */}
-      <div className="pointer-events-none px-4 pt-16">
-        <div className="max-w-md mx-auto">
-          <div className="flex justify-between items-center mb-1">
-            <span className="text-xs text-white/60 font-medium">Round {currentRound}</span>
-            <span
-              className={`text-2xl font-black tabular-nums ${
-                countdown <= 3 ? "text-red-400 animate-pulse" : "text-cyan-400"
-              }`}
-            >
-              {countdown}s
+      {/* ── Top: Countdown + Round ── */}
+      <div className="pointer-events-none flex flex-col items-center pt-4 gap-1">
+        <div className="bg-black/50 backdrop-blur-sm border border-white/10 rounded-xl px-6 py-2">
+          <span className="text-white font-bold text-lg">
+            Revealing aims in{" "}
+            <span className={countdown <= 3 ? "text-red-400" : "text-yellow-400"}>
+              {countdown}
             </span>
-          </div>
-          <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all duration-1000 ${
-                countdown <= 3 ? "bg-red-500" : "bg-cyan-500"
-              }`}
-              style={{ width: `${countdownPct * 100}%` }}
-            />
-          </div>
+          </span>
+        </div>
+        <div className="bg-black/40 backdrop-blur-sm border border-white/10 rounded-lg px-4 py-1">
+          <span className="text-white/70 text-sm font-medium">Round {currentRound}</span>
         </div>
       </div>
 
@@ -135,60 +145,78 @@ export default function GameControls() {
         )}
       </div>
 
-      {/* ── Bottom: Power + Lock ── */}
-      <div className="pointer-events-auto pb-6 px-4">
-        <div className="max-w-lg mx-auto flex flex-col gap-3">
-          {/* Direction readout */}
+      {/* ── Bottom: Power + Lock Aim ── */}
+      <div className="pointer-events-auto pb-4 px-4">
+        <div className="max-w-lg mx-auto flex flex-col gap-2">
+          {/* Power label + Lock Aim button row */}
+          <div className="flex items-center justify-center gap-3">
+            <div className="bg-black/60 backdrop-blur-sm border border-white/15 rounded-lg px-4 py-2">
+              <span className="text-white font-bold text-sm">
+                Power {aimPower}
+              </span>
+            </div>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleSubmit();
+              }}
+              disabled={moveSubmitted}
+              className={`rounded-lg px-5 py-2 font-bold text-sm transition-all border ${
+                moveSubmitted
+                  ? "bg-green-500/20 border-green-500/40 text-green-400"
+                  : "bg-green-600/80 border-green-400/40 text-white hover:bg-green-500 active:scale-95"
+              }`}
+            >
+              {moveSubmitted ? "Locked!" : "Lock Aim?"}
+            </button>
+          </div>
+
+          {/* Power bar with Q/E controls */}
+          <div className="flex items-center justify-center gap-1">
+            {/* Q button */}
+            <button
+              onClick={(e) => { e.stopPropagation(); decreasePower(); }}
+              disabled={moveSubmitted}
+              className="w-9 h-9 rounded-lg bg-black/70 border border-white/20 text-white font-bold text-sm flex items-center justify-center hover:bg-white/10 active:scale-95 transition-all"
+            >
+              Q
+            </button>
+
+            {/* Power slots */}
+            <div className="flex gap-0.5 mx-1">
+              {Array.from({ length: MAX_SLOTS }).map((_, i) => (
+                <button
+                  key={i}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    // Map slot index to nearest power level
+                    const level = POWER_LEVELS[Math.min(Math.floor(i / 2), POWER_LEVELS.length - 1)]!;
+                    useGameStore.getState().setAimPower(level);
+                  }}
+                  disabled={moveSubmitted}
+                  className={`w-7 h-9 rounded transition-all ${
+                    i < filledSlots
+                      ? "bg-emerald-500 shadow-sm shadow-emerald-500/30"
+                      : "bg-white/5 border border-white/10"
+                  }`}
+                />
+              ))}
+            </div>
+
+            {/* E button */}
+            <button
+              onClick={(e) => { e.stopPropagation(); increasePower(); }}
+              disabled={moveSubmitted}
+              className="w-9 h-9 rounded-lg bg-black/70 border border-white/20 text-white font-bold text-sm flex items-center justify-center hover:bg-white/10 active:scale-95 transition-all"
+            >
+              E
+            </button>
+          </div>
+
+          {/* Keyboard hint */}
           <div className="text-center">
-            <span className="text-xs text-white/40 tabular-nums">
-              {Math.round(aimDirection)}&deg;
-            </span>
+            <span className="text-[10px] text-white/25">Q/E: Power &middot; Drag: Aim &middot; Space: Lock</span>
           </div>
-
-          {/* Power selector */}
-          <div className="flex justify-center gap-2">
-            {POWER_LEVELS.map((level, i) => (
-              <button
-                key={level}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  useGameStore.getState().setAimPower(level);
-                }}
-                disabled={moveSubmitted}
-                className={`px-3 py-2 rounded-lg text-xs font-bold transition-all ${
-                  i <= powerIndex
-                    ? "text-white shadow-sm"
-                    : "bg-white/5 text-white/30 border border-white/10"
-                }`}
-                style={
-                  i <= powerIndex
-                    ? {
-                        backgroundColor: POWER_COLORS[i],
-                        boxShadow: `0 0 8px ${POWER_COLORS[i]}40`,
-                      }
-                    : undefined
-                }
-              >
-                {POWER_LABELS[i]}
-              </button>
-            ))}
-          </div>
-
-          {/* Lock Aim / Submit button */}
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              handleSubmit();
-            }}
-            disabled={moveSubmitted}
-            className={`w-full py-4 rounded-xl font-bold text-base transition-all ${
-              moveSubmitted
-                ? "bg-green-500/20 border-2 border-green-500/40 text-green-400"
-                : "bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-lg shadow-cyan-500/30 hover:shadow-cyan-500/50 active:scale-[0.98]"
-            }`}
-          >
-            {moveSubmitted ? "Aim Locked!" : "Lock Aim"}
-          </button>
         </div>
       </div>
     </div>

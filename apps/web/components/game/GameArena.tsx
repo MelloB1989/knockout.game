@@ -17,38 +17,43 @@ function EnvironmentModel({ mapType, center }: { mapType: string; center: [numbe
   return (
     <primitive
       object={scene.clone()}
-      position={center}
+      position={[center[0], -8, center[2]]}
+      scale={[3, 3, 3]}
       receiveShadow
     />
   );
 }
 
 /* ------------------------------------------------------------------ */
-/*  Direction Arrow — 3D arrow in front of penguin                    */
+/*  Direction Arrow — vertical arrow above penguin pointing aim dir   */
 /* ------------------------------------------------------------------ */
 function DirectionArrow({ direction, color, visible }: { direction: number; color: string; visible: boolean }) {
   const groupRef = useRef<THREE.Group>(null!);
+  const time = useRef(0);
 
-  useFrame(() => {
+  useFrame((_, delta) => {
     if (!groupRef.current) return;
     groupRef.current.visible = visible;
     if (visible) {
       const rad = (direction * Math.PI) / 180;
       groupRef.current.rotation.y = -rad + Math.PI / 2;
+      // Gentle bob
+      time.current += delta;
+      groupRef.current.position.y = 2.5 + Math.sin(time.current * 3) * 0.15;
     }
   });
 
   return (
-    <group ref={groupRef} position={[0, 2.2, 0]}>
-      {/* Arrow shaft */}
-      <mesh position={[0, 0, -1.2]}>
-        <boxGeometry args={[0.2, 0.2, 1.6]} />
-        <meshBasicMaterial color={color} transparent opacity={0.9} />
+    <group ref={groupRef} position={[0, 2.5, 0]}>
+      {/* Arrow head (cone) pointing forward */}
+      <mesh position={[0, 0, -1.0]} rotation={[Math.PI / 2, 0, 0]}>
+        <coneGeometry args={[0.35, 0.7, 6]} />
+        <meshBasicMaterial color={color} transparent opacity={0.95} />
       </mesh>
-      {/* Arrow head (cone) */}
-      <mesh position={[0, 0, -2.2]} rotation={[Math.PI / 2, 0, 0]}>
-        <coneGeometry args={[0.4, 0.8, 8]} />
-        <meshBasicMaterial color={color} transparent opacity={0.9} />
+      {/* Arrow shaft */}
+      <mesh position={[0, 0, -0.3]}>
+        <boxGeometry args={[0.15, 0.15, 1.0]} />
+        <meshBasicMaterial color={color} transparent opacity={0.8} />
       </mesh>
     </group>
   );
@@ -85,7 +90,7 @@ function PenguinModel({ penguin, isCurrentPlayer, mapCenter }: PenguinModelProps
   useFrame((_, delta) => {
     if (!groupRef.current) return;
 
-    const speed = 8;
+    const speed = 15;
     currentPos.current.lerp(targetPos.current, 1 - Math.exp(-speed * delta));
     groupRef.current.position.copy(currentPos.current);
 
@@ -95,12 +100,6 @@ function PenguinModel({ penguin, isCurrentPlayer, mapCenter }: PenguinModelProps
     const targetRotY = -rad + Math.PI / 2;
     groupRef.current.rotation.y +=
       (targetRotY - groupRef.current.rotation.y) * (1 - Math.exp(-10 * delta));
-
-    // Bounce effect when moving
-    if (penguin.velocity > 0.1) {
-      groupRef.current.position.y =
-        currentPos.current.y + Math.sin(Date.now() * 0.01) * 0.1;
-    }
   });
 
   // Determine arrow visibility and direction

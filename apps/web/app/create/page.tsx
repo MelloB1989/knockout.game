@@ -41,6 +41,7 @@ export default function CreatePage() {
         map_type: selectedMap,
         skin: selectedSkin,
       });
+      sessionStorage.setItem("selectedSkin", selectedSkin);
       setGameId(res.game_id);
       setIsHost(true);
       router.push(`/game/${res.game_id}`);

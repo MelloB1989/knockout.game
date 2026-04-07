@@ -7,6 +7,7 @@ import (
 	"knockout/internal/repository"
 	"knockout/internal/server/middlewares"
 	"log"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -232,6 +233,12 @@ func WSHandler(c *websocket.Conn) {
 			player.Velocity = 0
 			player.Direction = 0
 			player.Eliminated = 0
+
+			// Assign random spawn position within map bounds (with 15% margin)
+			marginX := float64(game.GameState.Map.Length) * 0.15
+			marginZ := float64(game.GameState.Map.Width) * 0.15
+			player.Position.X = marginX + rand.Float64()*(float64(game.GameState.Map.Length)-2*marginX)
+			player.Position.Z = marginZ + rand.Float64()*(float64(game.GameState.Map.Width)-2*marginZ)
 
 			if game.GameState.HostId == "" {
 				game.GameState.HostId = player.Id
@@ -459,7 +466,7 @@ func startGameLoop(gameId string) {
 			// Stream position updates during simulation at ~20fps
 			// SimulateTick is pure math (no real-time delay), so we add a small
 			// sleep to spread updates over time for smooth frontend animation.
-			const posPublishInterval = 50 * time.Millisecond
+			const posPublishInterval = 30 * time.Millisecond
 			game.GameState.PlayMovesWithCallback(func(players map[string]entities.Penguin) {
 				_ = game.PublishEvent(repository.PlayersPositionUpdate, nil, game.GameState)
 				time.Sleep(posPublishInterval)
