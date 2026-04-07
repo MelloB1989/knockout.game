@@ -20,6 +20,10 @@ func Serve() {
 		AllowMethods: "GET, POST, HEAD, PUT, DELETE, PATCH, OPTIONS",
 	}))
 	v1 := app.Group("/v1")
+
+	authRoutes := v1.Group("/auth")
+	authRoutes.Post("/guest", handlers.GuestAuthHandler)
+
 	gameserviceRoutes := v1.Group("/game")
 	gameserviceRoutes.Get("/maps", handlers.GetMapsHandler)
 	gameserviceRoutes.Get("/skins", handlers.GetSkinsHandler)
