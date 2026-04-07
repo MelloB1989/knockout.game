@@ -59,6 +59,10 @@ var skinCatalog = []entities.PlayerSkins{
 	entities.SkinForest,
 	entities.SkinNeon,
 	entities.SkinShadow,
+	entities.SkinPink,
+	entities.SkinShark,
+	entities.SkinTuxedo,
+	entities.SkinGoldKing,
 }
 
 func ListMapConfigs() []MapConfig {

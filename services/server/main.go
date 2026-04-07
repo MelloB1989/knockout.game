@@ -1,9 +1,10 @@
 package main
 
 import (
-	"knockout/internal/tests"
+	"knockout/internal/cmd"
 )
 
 func main() {
-	tests.RunTestGames()
+	// tests.RunTestGames()
+	cmd.StartServer()
 }

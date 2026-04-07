@@ -1,4 +1,5 @@
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+export const API_BASE =
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:9000";
 
 export const SKIN_MAP: Record<string, string> = {
   default: "Penguin_Classic",

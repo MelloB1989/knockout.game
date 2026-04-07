@@ -3,44 +3,22 @@ import {
   varchar,
   timestamp,
   integer,
-  text,
   json,
-  boolean,
-  index,
-  real,
-  uniqueIndex,
 } from "drizzle-orm/pg-core";
-import { sql } from "drizzle-orm";
 
-export const users = pgTable("users", {
-  id: varchar("id").primaryKey().notNull(),
-  first_name: varchar("first_name").notNull(),
-  last_name: varchar("last_name").notNull(),
+export const players = pgTable("players", {
+  username: varchar("username").primaryKey().notNull(),
   email: varchar("email").notNull(),
-  phone: varchar("phone"),
-  username: varchar("username"),
-  dob: timestamp("dob").notNull(),
-  gender: varchar("gender").notNull(),
   pfp: varchar("pfp").default(""),
-  bio: text("bio").notNull(),
-  hobbies: json("hobbies").default([]),
-  interests: json("interests").default([]),
-  is_developer: boolean("is_developer").default(false),
-  is_disabled: boolean("is_disabled").default(false),
-  is_admin: boolean("is_admin").default(false),
-  is_workflow_banned: boolean("is_workflow_banned").default(false),
-  extra: json("extra").default({}),
-  created_at: timestamp("created_at").defaultNow().notNull(),
-  updated_at: timestamp("updated_at").defaultNow().notNull(),
-  publisher_name: varchar("publisher_name").notNull(),
-  publisher_logo: varchar("publisher_logo").notNull(),
-  publisher_description: varchar("publisher_description").notNull(),
-  karma_points: integer("karma_points").default(0).notNull(),
-  billing_address: json("billing_address").default({
-    country: "IN",
-    state: "",
-    city: "",
-    street: "",
-    zipcode: "",
-  }),
+  points: integer("points").default(0).notNull(),
+  level: integer("level").default(0).notNull(),
+  last_played: timestamp("last_played").defaultNow().notNull(),
+  joined_at: timestamp("joined_at").defaultNow().notNull(),
+});
+
+export const games = pgTable("games", {
+  id: varchar("id").primaryKey().notNull(),
+  player_scores: json("player_scores").default([]).notNull(),
+  round: integer("round").default(0).notNull(),
+  played_at: timestamp("played_at").defaultNow().notNull(),
 });

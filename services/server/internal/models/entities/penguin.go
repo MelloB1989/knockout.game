@@ -10,12 +10,16 @@ const (
 type PlayerSkins string
 
 const (
-	SkinDefault PlayerSkins = "default"
-	SkinIcy     PlayerSkins = "icy"
-	SkinLava    PlayerSkins = "lava"
-	SkinForest  PlayerSkins = "forest"
-	SkinNeon    PlayerSkins = "neon"
-	SkinShadow  PlayerSkins = "shadow"
+	SkinDefault  PlayerSkins = "default"
+	SkinIcy      PlayerSkins = "icy"
+	SkinLava     PlayerSkins = "lava"
+	SkinForest   PlayerSkins = "forest"
+	SkinNeon     PlayerSkins = "neon"
+	SkinShadow   PlayerSkins = "shadow"
+	SkinPink     PlayerSkins = "pink"
+	SkinShark    PlayerSkins = "shark"
+	SkinTuxedo   PlayerSkins = "tuxedo"
+	SkinGoldKing PlayerSkins = "goldking"
 )
 
 type Position struct {
