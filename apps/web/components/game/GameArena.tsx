@@ -1,428 +1,32 @@
 "use client";
 
-import { useRef, useEffect, Suspense, useMemo, useState, Component, type ReactNode } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
-import { useGLTF } from "@react-three/drei";
-import * as THREE from "three";
+import { useRef, useEffect, useState, Component, type ReactNode } from "react";
 import { useGameStore } from "@/lib/game-store";
 import { skinToGlb, mapToEnvironmentGlb } from "@/lib/constants";
-import type { Penguin } from "@/lib/types";
 
 /* ------------------------------------------------------------------ */
-/*  Environment model                                                 */
+/*  Babylon.js imports (tree-shakeable ES6)                           */
 /* ------------------------------------------------------------------ */
-function EnvironmentModel({ mapType }: { mapType: string }) {
-  const glbPath = mapToEnvironmentGlb(mapType);
-  const { scene } = useGLTF(glbPath);
-  return (
-    <primitive
-      object={scene.clone()}
-      position={[0, -8, 0]}
-      scale={[3, 3, 3]}
-      receiveShadow
-    />
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Flat 2D Arrow — lies in XZ plane above penguin, points forward    */
-/* ------------------------------------------------------------------ */
-function DirectionArrow({ power, color, visible }: { power: number; color: string; visible: boolean }) {
-  const groupRef = useRef<THREE.Group>(null!);
-  const time = useRef(0);
-
-  // Arrow dimensions scale with power
-  const shaftLen = 0.6 + (power / 10) * 2.5;
-  const shaftWidth = 0.28;
-  const headLen = 0.6;
-  const headWidth = 0.8;
-
-  const arrowShape = useMemo(() => {
-    const shape = new THREE.Shape();
-    const sw = shaftWidth / 2;
-    const hw = headWidth / 2;
-
-    // Arrow pointing in +Y (will be rotated to -Z in world space)
-    shape.moveTo(-sw, 0);
-    shape.lineTo(-sw, shaftLen);
-    shape.lineTo(-hw, shaftLen);
-    shape.lineTo(0, shaftLen + headLen);
-    shape.lineTo(hw, shaftLen);
-    shape.lineTo(sw, shaftLen);
-    shape.lineTo(sw, 0);
-    shape.closePath();
-
-    return shape;
-  }, [shaftLen, shaftWidth, headLen, headWidth]);
-
-  useFrame((_, delta) => {
-    if (!groupRef.current) return;
-    groupRef.current.visible = visible;
-    if (visible) {
-      time.current += delta;
-      groupRef.current.position.y = 2.8 + Math.sin(time.current * 3) * 0.1;
-    }
-  });
-
-  return (
-    <group ref={groupRef} position={[0, 2.8, 0]}>
-      {/* Rotate shape: +90° around X makes +Y → +Z (forward, matches model face) */}
-      <mesh rotation={[Math.PI / 2, 0, 0]}>
-        <shapeGeometry args={[arrowShape]} />
-        <meshBasicMaterial color={color} transparent opacity={0.9} side={THREE.DoubleSide} />
-      </mesh>
-    </group>
-  );
-}
+import { Engine } from "@babylonjs/core/Engines/engine.js";
+import { Scene } from "@babylonjs/core/scene.js";
+import { Vector3, Color3, Color4 } from "@babylonjs/core/Maths/math.js";
+import { ArcRotateCamera } from "@babylonjs/core/Cameras/arcRotateCamera.js";
+import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight.js";
+import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight.js";
+import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator.js";
+import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder.js";
+import { TransformNode } from "@babylonjs/core/Meshes/transformNode.js";
+import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial.js";
+import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial.js";
+import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader.js";
+import { Mesh } from "@babylonjs/core/Meshes/mesh.js";
+import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData.js";
+import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh.js";
+// Side-effect import: registers glTF/GLB loader plugin
+import "@babylonjs/loaders/glTF/2.0/index.js";
 
 /* ------------------------------------------------------------------ */
-/*  Penguin model                                                     */
-/* ------------------------------------------------------------------ */
-interface PenguinModelProps {
-  penguin: Penguin;
-  isCurrentPlayer: boolean;
-  mapCenter: { x: number; z: number };
-}
-
-function PenguinModel({ penguin, isCurrentPlayer, mapCenter }: PenguinModelProps) {
-  const groupRef = useRef<THREE.Group>(null!);
-  const glbPath = skinToGlb(penguin.skin);
-  const { scene } = useGLTF(glbPath);
-
-  const phase = useGameStore((s) => s.phase);
-  const aimDirection = useGameStore((s) => s.aimDirection);
-  const aimPower = useGameStore((s) => s.aimPower);
-
-  // Center-relative position
-  const cx = penguin.position.x - mapCenter.x;
-  const cz = penguin.position.z - mapCenter.z;
-  const y = penguin.eliminated > 0 ? -3 : 0.5;
-
-  // Smooth position interpolation between server updates
-  const interpFrom = useRef(new THREE.Vector3(cx, y, cz));
-  const interpTo = useRef(new THREE.Vector3(cx, y, cz));
-  const interpT = useRef(1.0);
-  const lastServX = useRef(cx);
-  const lastServZ = useRef(cz);
-  const lastServY = useRef(y);
-
-  // Detect server position changes and start interpolation
-  if (cx !== lastServX.current || cz !== lastServZ.current || y !== lastServY.current) {
-    if (groupRef.current) {
-      interpFrom.current.copy(groupRef.current.position);
-    }
-    interpTo.current.set(cx, y, cz);
-    interpT.current = 0;
-    lastServX.current = cx;
-    lastServZ.current = cz;
-    lastServY.current = y;
-  }
-
-  useFrame((_, delta) => {
-    if (!groupRef.current) return;
-
-    // Smooth position interpolation (40ms duration between server updates)
-    const INTERP_DURATION = 0.04;
-    if (interpT.current < 1) {
-      interpT.current = Math.min(1, interpT.current + delta / INTERP_DURATION);
-      // Smooth step for easing
-      const t = interpT.current * interpT.current * (3 - 2 * interpT.current);
-      groupRef.current.position.lerpVectors(interpFrom.current, interpTo.current, t);
-    } else {
-      // Gently hold at target
-      groupRef.current.position.lerp(interpTo.current, 1 - Math.exp(-10 * delta));
-    }
-
-    // Rotate penguin to face its direction
-    // Model face is along local +Z. rotation.y = θ maps +Z to (sin(θ), cos(θ)).
-    // Physics direction = (cos(rad), sin(rad)). So sin(θ)=cos(rad), cos(θ)=sin(rad) → θ = π/2 - rad
-    const dir = isCurrentPlayer && phase === "countdown" ? aimDirection : penguin.direction;
-    const rad = (dir * Math.PI) / 180;
-    const targetRotY = -rad + Math.PI / 2;
-    groupRef.current.rotation.y +=
-      (targetRotY - groupRef.current.rotation.y) * (1 - Math.exp(-10 * delta));
-  });
-
-  // Determine arrow visibility
-  const showArrow = phase === "countdown" || phase === "animating";
-  const arrowPower = isCurrentPlayer ? aimPower : 6;
-  const arrowColor = isCurrentPlayer ? "#ffcc00" : "#ff4444";
-
-  return (
-    <group ref={groupRef} position={[cx, y, cz]}>
-      <primitive
-        object={scene.clone()}
-        scale={[1.2, 1.2, 1.2]}
-        castShadow
-        receiveShadow
-      />
-      {/* Direction arrow — no own rotation, inherits from penguin group */}
-      <DirectionArrow
-        power={arrowPower}
-        color={arrowColor}
-        visible={showArrow && penguin.eliminated === 0}
-      />
-      {/* Glow ring for current player */}
-      {isCurrentPlayer && penguin.eliminated === 0 && (
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.05, 0]}>
-          <ringGeometry args={[0.8, 1.1, 32]} />
-          <meshBasicMaterial color="#22d3ee" transparent opacity={0.4} side={THREE.DoubleSide} />
-        </mesh>
-      )}
-    </group>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Procedural ice tile texture                                       */
-/* ------------------------------------------------------------------ */
-function useIceTileTexture(length: number, width: number) {
-  return useMemo(() => {
-    const canvas = document.createElement("canvas");
-    const size = 512;
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext("2d")!;
-
-    const tileSize = 32;
-    const cols = size / tileSize;
-    const rows = size / tileSize;
-
-    // Background
-    ctx.fillStyle = "#c8e6f0";
-    ctx.fillRect(0, 0, size, size);
-
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const x = c * tileSize;
-        const y = r * tileSize;
-
-        // Ice tile with subtle variation
-        const base = 200 + Math.random() * 25;
-        const rr = Math.floor(base - 15 + Math.random() * 10);
-        const gg = Math.floor(base + Math.random() * 15);
-        const bb = Math.floor(base + 15 + Math.random() * 15);
-
-        // Tile fill (slightly inset)
-        ctx.fillStyle = `rgb(${rr}, ${gg}, ${bb})`;
-        ctx.fillRect(x + 1, y + 1, tileSize - 2, tileSize - 2);
-
-        // Tile border / groove
-        ctx.strokeStyle = "rgba(100, 180, 220, 0.5)";
-        ctx.lineWidth = 1;
-        ctx.strokeRect(x + 0.5, y + 0.5, tileSize - 1, tileSize - 1);
-
-        // Subtle highlight on top-left edge
-        ctx.fillStyle = "rgba(255, 255, 255, 0.15)";
-        ctx.fillRect(x + 1, y + 1, tileSize - 2, 2);
-        ctx.fillRect(x + 1, y + 1, 2, tileSize - 2);
-      }
-    }
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(length / 4, width / 4);
-    return texture;
-  }, [length, width]);
-}
-
-/* ------------------------------------------------------------------ */
-/*  Platform                                                          */
-/* ------------------------------------------------------------------ */
-interface PlatformProps {
-  length: number;
-  width: number;
-  mapType: string;
-}
-
-function Platform({ length, width, mapType }: PlatformProps) {
-  const meshRef = useRef<THREE.Mesh>(null!);
-  const targetScale = useRef(new THREE.Vector3(length, 0.5, width));
-  const prevLength = useRef(length);
-  const prevWidth = useRef(width);
-  const shrinkFlash = useRef(0);
-
-  const tileTexture = useIceTileTexture(length, width);
-
-  // Detect map shrink
-  if (length < prevLength.current || width < prevWidth.current) {
-    shrinkFlash.current = 1.0;
-    prevLength.current = length;
-    prevWidth.current = width;
-  }
-
-  targetScale.current.set(length, 0.5, width);
-
-  const edgeColor = {
-    frozen_lake: "#4dd0e1",
-    tundra_ring: "#80deea",
-    glacier_pass: "#b0bec5",
-    volcano_rim: "#ff7043",
-    neon_arena: "#e040fb",
-  }[mapType] || "#80deea";
-
-  useFrame((_, delta) => {
-    if (!meshRef.current) return;
-    meshRef.current.scale.lerp(targetScale.current, 1 - Math.exp(-3 * delta));
-
-    // Fade out shrink flash
-    if (shrinkFlash.current > 0) {
-      shrinkFlash.current = Math.max(0, shrinkFlash.current - delta * 2);
-    }
-  });
-
-  return (
-    <group position={[0, 0, 0]}>
-      {/* Main platform with ice tile texture */}
-      <mesh ref={meshRef} position={[0, -0.25, 0]} receiveShadow>
-        <boxGeometry args={[1, 1, 1]} />
-        <meshStandardMaterial
-          map={tileTexture}
-          roughness={0.3}
-          metalness={0.05}
-          color="#e0f0ff"
-        />
-      </mesh>
-
-      {/* Platform top surface overlay for extra brightness */}
-      <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <planeGeometry args={[length, width]} />
-        <meshBasicMaterial
-          color="#ffffff"
-          transparent
-          opacity={0.08}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
-
-      {/* Edge glow lines */}
-      {[-length / 2, length / 2].map((x) => (
-        <mesh key={`x${x}`} position={[x, 0.1, 0]}>
-          <boxGeometry args={[0.15, 0.35, width]} />
-          <meshBasicMaterial color={edgeColor} transparent opacity={0.4} />
-        </mesh>
-      ))}
-      {[-width / 2, width / 2].map((z) => (
-        <mesh key={`z${z}`} position={[0, 0.1, z]}>
-          <boxGeometry args={[length, 0.35, 0.15]} />
-          <meshBasicMaterial color={edgeColor} transparent opacity={0.4} />
-        </mesh>
-      ))}
-    </group>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Camera — third-person during game, orbit during lobby             */
-/*  Supports: horizontal aim rotation, vertical pitch, scroll zoom    */
-/* ------------------------------------------------------------------ */
-function GameCamera({ playerId, mapCenter }: { playerId: string; mapCenter: { x: number; z: number } }) {
-  const currentCamPos = useRef(new THREE.Vector3(0, 15, 25));
-  const currentLookAt = useRef(new THREE.Vector3());
-  const camPitch = useRef(0.35);
-  const camDist = useRef(12);
-
-  // Scroll to zoom
-  useEffect(() => {
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      camDist.current = Math.max(5, Math.min(25, camDist.current + e.deltaY * 0.01));
-    };
-    window.addEventListener("wheel", onWheel, { passive: false });
-    return () => window.removeEventListener("wheel", onWheel);
-  }, []);
-
-  // Right-click drag for vertical pitch
-  useEffect(() => {
-    let dragging = false;
-    let lastY = 0;
-    const onDown = (e: MouseEvent) => {
-      if (e.button === 2) { dragging = true; lastY = e.clientY; e.preventDefault(); }
-    };
-    const onMove = (e: MouseEvent) => {
-      if (!dragging) return;
-      const dy = e.clientY - lastY;
-      lastY = e.clientY;
-      camPitch.current = Math.max(0.05, Math.min(1.2, camPitch.current + dy * 0.005));
-    };
-    const onUp = (e: MouseEvent) => { if (e.button === 2) dragging = false; };
-    const onCtx = (e: MouseEvent) => e.preventDefault();
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    window.addEventListener("contextmenu", onCtx);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      window.removeEventListener("contextmenu", onCtx);
-    };
-  }, []);
-
-  useFrame(({ camera, clock }, delta) => {
-    const gs = useGameStore.getState().gameState;
-    const phase = useGameStore.getState().phase;
-    const aimDirection = useGameStore.getState().aimDirection;
-    if (!gs) return;
-
-    // Lobby: gentle orbit around map center
-    if (phase === "lobby") {
-      const t = clock.getElapsedTime();
-      const dist = camDist.current + 8;
-      const camX = Math.cos(t * 0.15) * dist;
-      const camZ = Math.sin(t * 0.15) * dist;
-      const desiredPos = new THREE.Vector3(camX, 14, camZ);
-      currentCamPos.current.lerp(desiredPos, 1 - Math.exp(-2 * delta));
-      currentLookAt.current.lerp(new THREE.Vector3(0, 0, 0), 1 - Math.exp(-2 * delta));
-      camera.position.copy(currentCamPos.current);
-      camera.lookAt(currentLookAt.current);
-      return;
-    }
-
-    const player = gs.players[playerId];
-
-    let px: number, pz: number;
-    if (!player || player.eliminated > 0) {
-      px = 0;
-      pz = 0;
-    } else {
-      px = player.position.x - mapCenter.x;
-      pz = player.position.z - mapCenter.z;
-    }
-
-    const lookTarget = new THREE.Vector3(px, 1, pz);
-
-    const dir = phase === "countdown" ? aimDirection : (player?.direction ?? 0);
-    const rad = (dir * Math.PI) / 180;
-
-    const dist = camDist.current;
-    const pitch = camPitch.current;
-    const camHeight = dist * Math.sin(pitch);
-    const horizDist = dist * Math.cos(pitch);
-    const camX = px - Math.cos(rad) * horizDist;
-    const camZ = pz - Math.sin(rad) * horizDist;
-    const desiredPos = new THREE.Vector3(camX, camHeight, camZ);
-
-    const smoothSpeed = phase === "countdown" ? 5 : 3;
-    currentCamPos.current.lerp(desiredPos, 1 - Math.exp(-smoothSpeed * delta));
-    currentLookAt.current.lerp(lookTarget, 1 - Math.exp(-smoothSpeed * delta));
-
-    camera.position.copy(currentCamPos.current);
-    camera.lookAt(currentLookAt.current);
-  });
-
-  return null;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Main arena                                                        */
-/* ------------------------------------------------------------------ */
-interface GameArenaProps {
-  playerId: string;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Error boundary for Canvas crashes                                  */
+/*  Error boundary for canvas crashes                                  */
 /* ------------------------------------------------------------------ */
 class CanvasErrorBoundary extends Component<
   { children: ReactNode },
@@ -439,7 +43,9 @@ class CanvasErrorBoundary extends Component<
       return (
         <div className="w-full h-full flex items-center justify-center bg-[#0a0a0f]">
           <div className="text-center max-w-md px-6">
-            <p className="text-red-400 text-lg font-bold mb-2">3D Renderer Error</p>
+            <p className="text-red-400 text-lg font-bold mb-2">
+              3D Renderer Error
+            </p>
             <p className="text-white/50 text-sm mb-4">{this.state.error}</p>
             <button
               onClick={() => this.setState({ error: null })}
@@ -463,7 +69,8 @@ function useWebGLAvailable() {
   useEffect(() => {
     try {
       const canvas = document.createElement("canvas");
-      const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
+      const gl =
+        canvas.getContext("webgl2") || canvas.getContext("webgl");
       setAvailable(!!gl);
       if (gl) {
         const ext = gl.getExtension("WEBGL_lose_context");
@@ -476,22 +83,606 @@ function useWebGLAvailable() {
   return available;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Penguin tracking data                                              */
+/* ------------------------------------------------------------------ */
+interface PenguinTracker {
+  root: TransformNode;
+  meshes: AbstractMesh[];
+  arrow: Mesh;
+  interpFrom: Vector3;
+  interpTo: Vector3;
+  interpT: number;
+  lastX: number;
+  lastZ: number;
+  lastY: number;
+  currentRotY: number;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Build a flat 2D arrow mesh (lies in XZ plane, points +Z)          */
+/* ------------------------------------------------------------------ */
+function createArrowMesh(scene: Scene, name: string, color: Color3): Mesh {
+  const shaftLen = 2.0;
+  const shaftW = 0.14;
+  const headLen = 0.5;
+  const headW = 0.4;
+
+  // Arrow in XZ plane, pointing +Z
+  const positions = [
+    // Shaft (quad: 2 triangles)
+    -shaftW, 0, 0,
+     shaftW, 0, 0,
+     shaftW, 0, shaftLen,
+    -shaftW, 0, shaftLen,
+    // Head (triangle)
+    -headW, 0, shaftLen,
+     headW, 0, shaftLen,
+     0,     0, shaftLen + headLen,
+  ];
+  const indices = [
+    0, 1, 2, 0, 2, 3,  // shaft
+    4, 5, 6,            // head
+  ];
+  const normals = [
+    0, 1, 0,  0, 1, 0,  0, 1, 0,  0, 1, 0,
+    0, 1, 0,  0, 1, 0,  0, 1, 0,
+  ];
+
+  const mesh = new Mesh(name, scene);
+  const vd = new VertexData();
+  vd.positions = positions;
+  vd.indices = indices;
+  vd.normals = normals;
+  vd.applyToMesh(mesh);
+
+  const mat = new StandardMaterial(name + "_mat", scene);
+  mat.diffuseColor = color;
+  mat.emissiveColor = color.scale(0.6);
+  mat.alpha = 0.85;
+  mat.backFaceCulling = false;
+  mesh.material = mat;
+  mesh.position.y = 2.8;
+  mesh.isPickable = false;
+
+  return mesh;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Scene builder — all Babylon.js logic lives here                   */
+/* ------------------------------------------------------------------ */
+class GameScene {
+  engine: Engine;
+  scene: Scene;
+  camera: ArcRotateCamera;
+  shadowGen: ShadowGenerator | null = null;
+  penguins: Map<string, PenguinTracker> = new Map();
+  mapTiles: AbstractMesh[] = [];
+  environmentRoot: TransformNode | null = null;
+  waterPlane: Mesh | null = null;
+  platformRoot: TransformNode | null = null;
+
+  // Loaded GLB caches
+  private skinCache: Map<string, AbstractMesh[]> = new Map();
+  private mapBlockTemplate: AbstractMesh[] | null = null;
+
+  private playerId: string;
+  private disposed = false;
+  private lobbyTime = 0;
+
+  constructor(canvas: HTMLCanvasElement, playerId: string) {
+    this.playerId = playerId;
+
+    // Engine
+    this.engine = new Engine(canvas, true, {
+      preserveDrawingBuffer: true,
+      stencil: true,
+    });
+
+    // Scene
+    this.scene = new Scene(this.engine);
+    this.scene.clearColor = new Color4(0.529, 0.808, 0.922, 1); // #87ceeb
+    this.scene.fogMode = Scene.FOGMODE_LINEAR;
+    this.scene.fogColor = new Color3(0.529, 0.808, 0.922);
+    this.scene.fogStart = 100;
+    this.scene.fogEnd = 350;
+    this.scene.ambientColor = new Color3(0.3, 0.3, 0.35);
+
+    // Camera
+    this.camera = new ArcRotateCamera(
+      "cam",
+      -Math.PI / 2,
+      Math.PI / 3,
+      20,
+      Vector3.Zero(),
+      this.scene
+    );
+    this.camera.lowerRadiusLimit = 5;
+    this.camera.upperRadiusLimit = 40;
+    this.camera.lowerBetaLimit = 0.1;
+    this.camera.upperBetaLimit = Math.PI / 2.1;
+    this.camera.attachControl(canvas, true);
+    // Disable default panning/keyboard so game controls work
+    this.camera.panningSensibility = 0;
+    this.camera.keysUp = [];
+    this.camera.keysDown = [];
+    this.camera.keysLeft = [];
+    this.camera.keysRight = [];
+
+    // Lighting
+    const hemi = new HemisphericLight("hemi", new Vector3(0, 1, 0), this.scene);
+    hemi.intensity = 1.0;
+    hemi.diffuse = new Color3(0.7, 0.75, 0.85);
+    hemi.groundColor = new Color3(0.53, 0.67, 0.8);
+
+    const dir = new DirectionalLight("dir", new Vector3(-1, -2, -1).normalize(), this.scene);
+    dir.position = new Vector3(30, 50, 25);
+    dir.intensity = 1.8;
+    dir.diffuse = new Color3(1, 0.98, 0.95);
+
+    // Shadows
+    this.shadowGen = new ShadowGenerator(2048, dir);
+    this.shadowGen.useBlurExponentialShadowMap = true;
+    this.shadowGen.blurKernel = 16;
+
+    // Water plane
+    this.waterPlane = MeshBuilder.CreateGround("water", {
+      width: 400,
+      height: 400,
+    }, this.scene);
+    this.waterPlane.position.y = -3;
+    const waterMat = new StandardMaterial("waterMat", this.scene);
+    waterMat.diffuseColor = new Color3(0.13, 0.59, 0.95);
+    waterMat.alpha = 0.7;
+    waterMat.specularColor = new Color3(0.3, 0.4, 0.5);
+    this.waterPlane.material = waterMat;
+    this.waterPlane.receiveShadows = true;
+
+    // Inspector in dev mode
+    if (process.env.NODE_ENV === "development") {
+      this.scene.onKeyboardObservable.add((kbInfo) => {
+        if (kbInfo.type === 2 && kbInfo.event.key === "F9") {
+          if (this.scene.debugLayer.isVisible()) {
+            this.scene.debugLayer.hide();
+          } else {
+            import("@babylonjs/core/Debug/debugLayer.js").then(() => {
+              import("@babylonjs/inspector").then(() => {
+                this.scene.debugLayer.show({ embedMode: true });
+              });
+            });
+          }
+        }
+      });
+    }
+
+    // Render loop
+    this.engine.runRenderLoop(() => {
+      if (this.disposed) return;
+      this.updateFrame();
+      this.scene.render();
+    });
+
+    // Resize
+    const onResize = () => this.engine.resize();
+    window.addEventListener("resize", onResize);
+    this.scene.onDisposeObservable.add(() => {
+      window.removeEventListener("resize", onResize);
+    });
+  }
+
+  /* ── Load assets ── */
+  async init() {
+    const gs = useGameStore.getState().gameState;
+    if (!gs) return;
+
+    // Load map block template
+    await this.loadMapBlockTemplate();
+
+    // Build tiled platform
+    this.buildPlatform(gs.map.length, gs.map.width);
+
+    // Load environment
+    await this.loadEnvironment(gs.map.type);
+
+    // Load all penguin skins & create instances
+    await this.loadPenguins(gs);
+  }
+
+  private async loadMapBlockTemplate() {
+    try {
+      const result = await SceneLoader.ImportMeshAsync("", "/assets/", "MapBlock.glb", this.scene);
+      // Hide originals, store as template
+      this.mapBlockTemplate = result.meshes;
+      for (const m of result.meshes) {
+        m.setEnabled(false);
+      }
+    } catch (e) {
+      console.warn("Failed to load MapBlock.glb, using fallback platform", e);
+    }
+  }
+
+  private buildPlatform(mapLength: number, mapWidth: number) {
+    this.platformRoot = new TransformNode("platform", this.scene);
+
+    if (this.mapBlockTemplate && this.mapBlockTemplate.length > 0) {
+      // MapBlock.glb is 2x2 units (x: -1..1, z: -1..1)
+      const blockSize = 2;
+      const tilesX = Math.ceil(mapLength / blockSize);
+      const tilesZ = Math.ceil(mapWidth / blockSize);
+      const offsetX = -(tilesX * blockSize) / 2 + blockSize / 2;
+      const offsetZ = -(tilesZ * blockSize) / 2 + blockSize / 2;
+
+      for (let ix = 0; ix < tilesX; ix++) {
+        for (let iz = 0; iz < tilesZ; iz++) {
+          for (const orig of this.mapBlockTemplate) {
+            if (!orig.name || orig.name === "__root__") continue;
+            const clone = (orig as Mesh).clone(`tile_${ix}_${iz}_${orig.name}`, this.platformRoot);
+            if (!clone) continue;
+            clone.setEnabled(true);
+            clone.position.x += offsetX + ix * blockSize;
+            clone.position.z += offsetZ + iz * blockSize;
+            clone.receiveShadows = true;
+            this.mapTiles.push(clone);
+          }
+        }
+      }
+    } else {
+      // Fallback: simple box
+      const platform = MeshBuilder.CreateBox("platform_fallback", {
+        width: mapLength,
+        height: 0.5,
+        depth: mapWidth,
+      }, this.scene);
+      platform.position.y = -0.25;
+      const mat = new StandardMaterial("platformMat", this.scene);
+      mat.diffuseColor = new Color3(0.75, 0.82, 0.88);
+      mat.specularColor = new Color3(0.2, 0.25, 0.3);
+      platform.material = mat;
+      platform.receiveShadows = true;
+      platform.parent = this.platformRoot;
+    }
+  }
+
+  private async loadEnvironment(mapType: string) {
+    const glbPath = mapToEnvironmentGlb(mapType);
+    try {
+      const result = await SceneLoader.ImportMeshAsync("", "", glbPath, this.scene);
+      this.environmentRoot = new TransformNode("env", this.scene);
+      for (const m of result.meshes) {
+        m.parent = this.environmentRoot;
+      }
+      this.environmentRoot.position = new Vector3(0, -8, 0);
+      this.environmentRoot.scaling = new Vector3(3, 3, 3);
+    } catch (e) {
+      console.warn("Failed to load environment", glbPath, e);
+    }
+  }
+
+  private async loadSkin(skin: string): Promise<AbstractMesh[]> {
+    if (this.skinCache.has(skin)) return this.skinCache.get(skin)!;
+
+    const glbPath = skinToGlb(skin);
+    try {
+      const result = await SceneLoader.ImportMeshAsync("", "", glbPath, this.scene);
+      // Disable originals (used as templates)
+      for (const m of result.meshes) {
+        m.setEnabled(false);
+      }
+      this.skinCache.set(skin, result.meshes);
+      return result.meshes;
+    } catch (e) {
+      console.warn("Failed to load penguin skin", glbPath, e);
+      return [];
+    }
+  }
+
+  private async loadPenguins(gs: import("@/lib/types").GameState) {
+    const mapCenterX = gs.map.length / 2;
+    const mapCenterZ = gs.map.width / 2;
+
+    for (const [id, penguin] of Object.entries(gs.players)) {
+      const templateMeshes = await this.loadSkin(penguin.skin);
+      if (templateMeshes.length === 0) continue;
+
+      const isCurrentPlayer = id === this.playerId;
+      const root = new TransformNode(`penguin_${id}`, this.scene);
+
+      const cx = penguin.position.x - mapCenterX;
+      const cz = penguin.position.z - mapCenterZ;
+      const y = penguin.eliminated > 0 ? -3 : 0.5;
+      root.position = new Vector3(cx, y, cz);
+
+      // Clone meshes
+      const clonedMeshes: AbstractMesh[] = [];
+      for (const orig of templateMeshes) {
+        if (!orig.name || orig.name === "__root__") continue;
+        const clone = (orig as Mesh).clone(`${id}_${orig.name}`, root);
+        if (!clone) continue;
+        clone.setEnabled(true);
+        clone.scaling = new Vector3(1.2, 1.2, 1.2);
+        clone.receiveShadows = true;
+        if (this.shadowGen) {
+          this.shadowGen.addShadowCaster(clone);
+        }
+        clonedMeshes.push(clone);
+      }
+
+      // Arrow
+      const arrowColor = isCurrentPlayer
+        ? new Color3(1, 0.8, 0)
+        : new Color3(1, 0.27, 0.27);
+      const arrow = createArrowMesh(this.scene, `arrow_${id}`, arrowColor);
+      arrow.parent = root;
+      arrow.setEnabled(false);
+
+      // Glow ring for current player
+      if (isCurrentPlayer) {
+        const ring = MeshBuilder.CreateTorus(`ring_${id}`, {
+          diameter: 2.0,
+          thickness: 0.15,
+          tessellation: 32,
+        }, this.scene);
+        ring.parent = root;
+        ring.position.y = 0.05;
+        const ringMat = new StandardMaterial(`ringMat_${id}`, this.scene);
+        ringMat.diffuseColor = new Color3(0.13, 0.83, 0.93);
+        ringMat.emissiveColor = new Color3(0.1, 0.5, 0.6);
+        ringMat.alpha = 0.4;
+        ring.material = ringMat;
+        ring.isPickable = false;
+      }
+
+      const rad = (penguin.direction * Math.PI) / 180;
+      const initRotY = -rad + Math.PI / 2;
+
+      this.penguins.set(id, {
+        root,
+        meshes: clonedMeshes,
+        arrow,
+        interpFrom: new Vector3(cx, y, cz),
+        interpTo: new Vector3(cx, y, cz),
+        interpT: 1,
+        lastX: cx,
+        lastZ: cz,
+        lastY: y,
+        currentRotY: initRotY,
+      });
+    }
+  }
+
+  /* ── Per-frame update ── */
+  private updateFrame() {
+    const store = useGameStore.getState();
+    const gs = store.gameState;
+    const phase = store.phase;
+    if (!gs) return;
+
+    const dt = this.engine.getDeltaTime() / 1000; // seconds
+    const mapCenterX = gs.map.length / 2;
+    const mapCenterZ = gs.map.width / 2;
+
+    // Camera: lobby orbit
+    if (phase === "lobby") {
+      this.lobbyTime += dt;
+      this.camera.target = Vector3.Zero();
+      this.camera.alpha = -Math.PI / 2 + this.lobbyTime * 0.15;
+      this.camera.beta = Math.PI / 3;
+      this.camera.radius = 28;
+      // Detach controls during lobby orbit
+      return;
+    }
+
+    // Update each penguin
+    for (const [id, tracker] of this.penguins) {
+      const penguin = gs.players[id];
+      if (!penguin) continue;
+
+      const cx = penguin.position.x - mapCenterX;
+      const cz = penguin.position.z - mapCenterZ;
+      const y = penguin.eliminated > 0 ? -3 : 0.5;
+
+      // Detect position change → start interpolation
+      if (cx !== tracker.lastX || cz !== tracker.lastZ || y !== tracker.lastY) {
+        tracker.interpFrom.copyFrom(tracker.root.position);
+        tracker.interpTo.set(cx, y, cz);
+        tracker.interpT = 0;
+        tracker.lastX = cx;
+        tracker.lastZ = cz;
+        tracker.lastY = y;
+      }
+
+      // Smooth position interpolation
+      const INTERP_DURATION = 0.04;
+      if (tracker.interpT < 1) {
+        tracker.interpT = Math.min(1, tracker.interpT + dt / INTERP_DURATION);
+        const t = tracker.interpT * tracker.interpT * (3 - 2 * tracker.interpT);
+        Vector3.LerpToRef(tracker.interpFrom, tracker.interpTo, t, tracker.root.position);
+      } else {
+        // Gently hold at target
+        const blend = 1 - Math.exp(-10 * dt);
+        tracker.root.position.x += (tracker.interpTo.x - tracker.root.position.x) * blend;
+        tracker.root.position.y += (tracker.interpTo.y - tracker.root.position.y) * blend;
+        tracker.root.position.z += (tracker.interpTo.z - tracker.root.position.z) * blend;
+      }
+
+      // Rotation: penguin model faces +Z. rotation.y = θ maps +Z to (sin(θ), cos(θ))
+      // Physics dir 0° = +X → targetRotY = -rad + π/2
+      const isCurrentPlayer = id === this.playerId;
+      const dir = isCurrentPlayer && phase === "countdown"
+        ? store.aimDirection
+        : penguin.direction;
+      const rad = (dir * Math.PI) / 180;
+      const targetRotY = -rad + Math.PI / 2;
+
+      // Smooth rotation
+      let diff = targetRotY - tracker.currentRotY;
+      // Normalize diff to [-π, π]
+      while (diff > Math.PI) diff -= 2 * Math.PI;
+      while (diff < -Math.PI) diff += 2 * Math.PI;
+      tracker.currentRotY += diff * (1 - Math.exp(-10 * dt));
+      tracker.root.rotation.y = tracker.currentRotY;
+
+      // Arrow visibility
+      const showArrow = (phase === "countdown" || phase === "animating") && penguin.eliminated === 0;
+      tracker.arrow.setEnabled(showArrow);
+
+      if (showArrow) {
+        // Scale arrow with power
+        const power = isCurrentPlayer ? store.aimPower : 6;
+        const scale = 0.6 + (power / 10) * 1.5;
+        tracker.arrow.scaling.z = scale;
+        // Bob up and down
+        tracker.arrow.position.y = 2.8 + Math.sin(performance.now() / 333) * 0.1;
+      }
+    }
+
+    // Camera follow during gameplay
+    const player = gs.players[this.playerId];
+    if (player && player.eliminated === 0) {
+      const px = player.position.x - mapCenterX;
+      const pz = player.position.z - mapCenterZ;
+      const target = new Vector3(px, 1, pz);
+
+      const smoothSpeed = phase === "countdown" ? 5 : 3;
+      const blend = 1 - Math.exp(-smoothSpeed * dt);
+      this.camera.target.x += (target.x - this.camera.target.x) * blend;
+      this.camera.target.y += (target.y - this.camera.target.y) * blend;
+      this.camera.target.z += (target.z - this.camera.target.z) * blend;
+
+      // Alpha follows aim direction during countdown
+      if (phase === "countdown") {
+        const aimRad = (store.aimDirection * Math.PI) / 180;
+        // Camera behind player: alpha = aimRad + π (look from behind)
+        let targetAlpha = aimRad + Math.PI;
+        let alphaDiff = targetAlpha - this.camera.alpha;
+        while (alphaDiff > Math.PI) alphaDiff -= 2 * Math.PI;
+        while (alphaDiff < -Math.PI) alphaDiff += 2 * Math.PI;
+        this.camera.alpha += alphaDiff * (1 - Math.exp(-5 * dt));
+      }
+    } else {
+      // Spectator: look at center
+      const blend = 1 - Math.exp(-2 * dt);
+      this.camera.target.x += (0 - this.camera.target.x) * blend;
+      this.camera.target.y += (1 - this.camera.target.y) * blend;
+      this.camera.target.z += (0 - this.camera.target.z) * blend;
+    }
+
+    // Handle new players joining
+    this.syncPlayers(gs);
+  }
+
+  /* ── Sync players: add new ones that joined mid-game ── */
+  private syncPlayers(gs: import("@/lib/types").GameState) {
+    for (const id of Object.keys(gs.players)) {
+      if (!this.penguins.has(id)) {
+        // New player appeared — load their penguin
+        this.loadPenguinSingle(id, gs).catch(console.warn);
+      }
+    }
+  }
+
+  private async loadPenguinSingle(id: string, gs: import("@/lib/types").GameState) {
+    const penguin = gs.players[id];
+    if (!penguin || this.penguins.has(id)) return;
+
+    const mapCenterX = gs.map.length / 2;
+    const mapCenterZ = gs.map.width / 2;
+
+    const templateMeshes = await this.loadSkin(penguin.skin);
+    if (templateMeshes.length === 0) return;
+
+    const isCurrentPlayer = id === this.playerId;
+    const root = new TransformNode(`penguin_${id}`, this.scene);
+    const cx = penguin.position.x - mapCenterX;
+    const cz = penguin.position.z - mapCenterZ;
+    const y = penguin.eliminated > 0 ? -3 : 0.5;
+    root.position = new Vector3(cx, y, cz);
+
+    const clonedMeshes: AbstractMesh[] = [];
+    for (const orig of templateMeshes) {
+      if (!orig.name || orig.name === "__root__") continue;
+      const clone = (orig as Mesh).clone(`${id}_${orig.name}`, root);
+      if (!clone) continue;
+      clone.setEnabled(true);
+      clone.scaling = new Vector3(1.2, 1.2, 1.2);
+      clone.receiveShadows = true;
+      if (this.shadowGen) this.shadowGen.addShadowCaster(clone);
+      clonedMeshes.push(clone);
+    }
+
+    const arrowColor = isCurrentPlayer
+      ? new Color3(1, 0.8, 0)
+      : new Color3(1, 0.27, 0.27);
+    const arrow = createArrowMesh(this.scene, `arrow_${id}`, arrowColor);
+    arrow.parent = root;
+    arrow.setEnabled(false);
+
+    const rad = (penguin.direction * Math.PI) / 180;
+    this.penguins.set(id, {
+      root,
+      meshes: clonedMeshes,
+      arrow,
+      interpFrom: new Vector3(cx, y, cz),
+      interpTo: new Vector3(cx, y, cz),
+      interpT: 1,
+      lastX: cx,
+      lastZ: cz,
+      lastY: y,
+      currentRotY: -rad + Math.PI / 2,
+    });
+  }
+
+  /* ── Cleanup ── */
+  dispose() {
+    this.disposed = true;
+    this.engine.stopRenderLoop();
+    this.scene.dispose();
+    this.engine.dispose();
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  React component                                                    */
+/* ------------------------------------------------------------------ */
+interface GameArenaProps {
+  playerId: string;
+}
+
 export default function GameArena({ playerId }: GameArenaProps) {
   const gameState = useGameStore((s) => s.gameState);
   const webglAvailable = useWebGLAvailable();
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const sceneRef = useRef<GameScene | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !gameState || sceneRef.current) return;
+
+    const gs = new GameScene(canvas, playerId);
+    sceneRef.current = gs;
+    gs.init().catch(console.error);
+
+    return () => {
+      gs.dispose();
+      sceneRef.current = null;
+    };
+  }, [playerId, gameState]);
 
   if (!gameState) return null;
 
   if (webglAvailable === false) {
     return (
-      <div style={{ position: "absolute", top: 0, left: 0, width: "100vw", height: "100vh" }}
+      <div
+        style={{ position: "absolute", top: 0, left: 0, width: "100vw", height: "100vh" }}
         className="flex items-center justify-center bg-[#0a0a0f]"
       >
         <div className="text-center max-w-md px-6">
-          <p className="text-red-400 text-xl font-bold mb-2">WebGL Not Available</p>
+          <p className="text-red-400 text-xl font-bold mb-2">
+            WebGL Not Available
+          </p>
           <p className="text-white/50 text-sm">
-            Your browser or device does not support WebGL, which is required
-            for the 3D game arena. Try a different browser or enable hardware
+            Your browser or device does not support WebGL, which is required for
+            the 3D game arena. Try a different browser or enable hardware
             acceleration in your browser settings.
           </p>
         </div>
@@ -499,10 +690,10 @@ export default function GameArena({ playerId }: GameArenaProps) {
     );
   }
 
-  // Still checking — show loading
   if (webglAvailable === null) {
     return (
-      <div style={{ position: "absolute", top: 0, left: 0, width: "100vw", height: "100vh" }}
+      <div
+        style={{ position: "absolute", top: 0, left: 0, width: "100vw", height: "100vh" }}
         className="flex items-center justify-center bg-[#0a0a0f]"
       >
         <div className="text-white/40 text-sm">Initializing 3D arena...</div>
@@ -510,70 +701,13 @@ export default function GameArena({ playerId }: GameArenaProps) {
     );
   }
 
-  const players = Object.values(gameState.players);
-  const mapCenter = {
-    x: gameState.map.length / 2,
-    z: gameState.map.width / 2,
-  };
-
   return (
     <div style={{ position: "absolute", top: 0, left: 0, width: "100vw", height: "100vh" }}>
       <CanvasErrorBoundary>
-        <Canvas
-          shadows={{ type: THREE.PCFShadowMap }}
-          camera={{ position: [0, 15, 25], fov: 60, near: 0.1, far: 500 }}
-          gl={{ alpha: false, antialias: true, powerPreference: "default" }}
-          onCreated={({ gl }) => {
-            gl.setClearColor(0x87ceeb, 1);
-            gl.toneMapping = THREE.ACESFilmicToneMapping;
-            gl.toneMappingExposure = 1.8;
-          }}
-        >
-          <color attach="background" args={["#87ceeb"]} />
-          <fog attach="fog" args={["#87ceeb", 100, 350]} />
-
-          <ambientLight intensity={1.4} />
-          <directionalLight
-            position={[30, 50, 25]}
-            intensity={2.2}
-            castShadow
-            shadow-mapSize-width={2048}
-            shadow-mapSize-height={2048}
-            shadow-camera-far={120}
-            shadow-camera-left={-60}
-            shadow-camera-right={60}
-            shadow-camera-top={60}
-            shadow-camera-bottom={-60}
-          />
-          <directionalLight position={[-20, 25, -15]} intensity={0.8} />
-          <pointLight position={[0, 25, 0]} intensity={0.5} color="#ffffff" />
-          <hemisphereLight args={["#b4d7ff", "#88aacc", 0.8]} />
-
-          <GameCamera playerId={playerId} mapCenter={mapCenter} />
-
-          <Platform
-            length={gameState.map.length}
-            width={gameState.map.width}
-            mapType={gameState.map.type}
-          />
-
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -3, 0]}>
-            <planeGeometry args={[400, 400]} />
-            <meshStandardMaterial color="#2196f3" transparent opacity={0.7} roughness={0.2} metalness={0.3} />
-          </mesh>
-
-          <Suspense fallback={null}>
-            <EnvironmentModel mapType={gameState.map.type} />
-            {players.map((penguin) => (
-              <PenguinModel
-                key={penguin.id}
-                penguin={penguin}
-                isCurrentPlayer={penguin.id === playerId}
-                mapCenter={mapCenter}
-              />
-            ))}
-          </Suspense>
-        </Canvas>
+        <canvas
+          ref={canvasRef}
+          style={{ width: "100%", height: "100%", display: "block", touchAction: "none" }}
+        />
       </CanvasErrorBoundary>
     </div>
   );
