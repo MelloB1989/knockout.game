@@ -14,6 +14,7 @@ export interface Penguin {
   velocity: number;
   direction: number;
   eliminated: number;
+  score: number;
 }
 
 export interface PenguinMove {
@@ -93,6 +94,7 @@ export interface RoundMovesPayload {
 export interface PlayerEliminatedPayload {
   player_id: string;
   round: number;
+  eliminated_by?: string;
 }
 
 export interface GameEndedPayload {

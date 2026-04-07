@@ -16,6 +16,7 @@ type GameState struct {
 	HostId          string                          `json:"host_id"`
 	Started         bool                            `json:"started"`
 	roundEliminated bool
+	LastHitBy       map[string]string `json:"-"` // tracks last collision partner per player (ephemeral)
 }
 
 func CreateGameState(mapType string, l, w int) *GameState {
@@ -55,6 +56,7 @@ func (gs *GameState) PlayMovesWithCallback(onTick TickCallback) []entities.Pengu
 
 func (gs *GameState) ApplyMoves() []entities.PenguinMove {
 	gs.roundEliminated = false
+	gs.LastHitBy = make(map[string]string) // reset collision tracking per round
 	moves := make([]entities.PenguinMove, 0, len(gs.CurrentMoves))
 
 	// Apply moves to players
@@ -141,6 +143,16 @@ func (gs *GameState) SimulateTick(dt float64) bool {
 			velocitiesX[playerId] = 0
 			velocitiesZ[playerId] = 0
 			gs.roundEliminated = true
+
+			// Award score to the player who last hit the eliminated player
+			if gs.LastHitBy != nil {
+				if hitterId, ok := gs.LastHitBy[playerId]; ok {
+					if hitter, ok2 := gs.Players[hitterId]; ok2 && hitter.Eliminated == 0 {
+						hitter.Score += 10
+						gs.Players[hitterId] = hitter
+					}
+				}
+			}
 		}
 
 		gs.Players[playerId] = player
@@ -198,6 +210,13 @@ func (gs *GameState) SimulateTick(dt float64) bool {
 			velocitiesZ[id1] = v1z
 			velocitiesX[id2] = v2x
 			velocitiesZ[id2] = v2z
+
+			// Track collision partners for scoring
+			if gs.LastHitBy == nil {
+				gs.LastHitBy = make(map[string]string)
+			}
+			gs.LastHitBy[id1] = id2
+			gs.LastHitBy[id2] = id1
 		}
 	}
 

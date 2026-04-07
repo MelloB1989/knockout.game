@@ -38,6 +38,7 @@ type Penguin struct {
 	Velocity     float64    `json:"velocity"`   //Latest velocity
 	Direction    float64    `json:"direction"`  //in degrees (0-360)
 	Eliminated   int        `json:"eliminated"` //Round number the player was eliminated in.
+	Score        int        `json:"score"`
 }
 
 type PenguinMove struct {

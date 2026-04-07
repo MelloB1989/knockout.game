@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useEffect, Suspense, useMemo } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import { useGameStore } from "@/lib/game-store";
@@ -11,13 +11,13 @@ import type { Penguin } from "@/lib/types";
 /* ------------------------------------------------------------------ */
 /*  Environment model                                                 */
 /* ------------------------------------------------------------------ */
-function EnvironmentModel({ mapType, center }: { mapType: string; center: [number, number, number] }) {
+function EnvironmentModel({ mapType }: { mapType: string }) {
   const glbPath = mapToEnvironmentGlb(mapType);
   const { scene } = useGLTF(glbPath);
   return (
     <primitive
       object={scene.clone()}
-      position={[center[0], -8, center[2]]}
+      position={[0, -8, 0]}
       scale={[3, 3, 3]}
       receiveShadow
     />
@@ -25,37 +25,51 @@ function EnvironmentModel({ mapType, center }: { mapType: string; center: [numbe
 }
 
 /* ------------------------------------------------------------------ */
-/*  Direction Arrow — points forward from penguin, length = power     */
+/*  Flat 2D Arrow — lies in XZ plane above penguin, points forward    */
 /* ------------------------------------------------------------------ */
 function DirectionArrow({ power, color, visible }: { power: number; color: string; visible: boolean }) {
   const groupRef = useRef<THREE.Group>(null!);
   const time = useRef(0);
 
-  // Arrow length scales with power: power 2 → short, power 10 → long
-  const shaftLen = 0.5 + (power / 10) * 2.0;
-  const conePos = -(shaftLen + 0.35);
-  const shaftPos = -(shaftLen / 2);
+  // Arrow dimensions scale with power
+  const shaftLen = 0.6 + (power / 10) * 2.5;
+  const shaftWidth = 0.28;
+  const headLen = 0.6;
+  const headWidth = 0.8;
+
+  const arrowShape = useMemo(() => {
+    const shape = new THREE.Shape();
+    const sw = shaftWidth / 2;
+    const hw = headWidth / 2;
+
+    // Arrow pointing in +Y (will be rotated to -Z in world space)
+    shape.moveTo(-sw, 0);
+    shape.lineTo(-sw, shaftLen);
+    shape.lineTo(-hw, shaftLen);
+    shape.lineTo(0, shaftLen + headLen);
+    shape.lineTo(hw, shaftLen);
+    shape.lineTo(sw, shaftLen);
+    shape.lineTo(sw, 0);
+    shape.closePath();
+
+    return shape;
+  }, [shaftLen, shaftWidth, headLen, headWidth]);
 
   useFrame((_, delta) => {
     if (!groupRef.current) return;
     groupRef.current.visible = visible;
     if (visible) {
       time.current += delta;
-      groupRef.current.position.y = 2.5 + Math.sin(time.current * 3) * 0.12;
+      groupRef.current.position.y = 2.8 + Math.sin(time.current * 3) * 0.1;
     }
   });
 
   return (
-    <group ref={groupRef} position={[0, 2.5, 0]}>
-      {/* Arrow shaft — along local -Z (forward in penguin space) */}
-      <mesh position={[0, 0, shaftPos]}>
-        <boxGeometry args={[0.12, 0.12, shaftLen]} />
-        <meshBasicMaterial color={color} transparent opacity={0.85} />
-      </mesh>
-      {/* Arrow head (cone) — tip of the arrow */}
-      <mesh position={[0, 0, conePos]} rotation={[Math.PI / 2, 0, 0]}>
-        <coneGeometry args={[0.3, 0.6, 6]} />
-        <meshBasicMaterial color={color} transparent opacity={0.95} />
+    <group ref={groupRef} position={[0, 2.8, 0]}>
+      {/* Rotate shape: -90° around X makes +Y → -Z (forward in penguin space) */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]}>
+        <shapeGeometry args={[arrowShape]} />
+        <meshBasicMaterial color={color} transparent opacity={0.9} side={THREE.DoubleSide} />
       </mesh>
     </group>
   );
@@ -82,24 +96,50 @@ function PenguinModel({ penguin, isCurrentPlayer, mapCenter }: PenguinModelProps
   // Center-relative position
   const cx = penguin.position.x - mapCenter.x;
   const cz = penguin.position.z - mapCenter.z;
+  const y = penguin.eliminated > 0 ? -3 : 0.5;
 
-  const targetPos = useRef(new THREE.Vector3(cx, 0.5, cz));
-  const currentPos = useRef(new THREE.Vector3(cx, 0.5, cz));
+  // Smooth position interpolation between server updates
+  const interpFrom = useRef(new THREE.Vector3(cx, y, cz));
+  const interpTo = useRef(new THREE.Vector3(cx, y, cz));
+  const interpT = useRef(1.0);
+  const lastServX = useRef(cx);
+  const lastServZ = useRef(cz);
+  const lastServY = useRef(y);
 
-  // Update target when position changes
-  targetPos.current.set(cx, penguin.eliminated > 0 ? -3 : 0.5, cz);
+  // Detect server position changes and start interpolation
+  if (cx !== lastServX.current || cz !== lastServZ.current || y !== lastServY.current) {
+    if (groupRef.current) {
+      interpFrom.current.copy(groupRef.current.position);
+    }
+    interpTo.current.set(cx, y, cz);
+    interpT.current = 0;
+    lastServX.current = cx;
+    lastServZ.current = cz;
+    lastServY.current = y;
+  }
 
   useFrame((_, delta) => {
     if (!groupRef.current) return;
 
-    const speed = 15;
-    currentPos.current.lerp(targetPos.current, 1 - Math.exp(-speed * delta));
-    groupRef.current.position.copy(currentPos.current);
+    // Smooth position interpolation (40ms duration between server updates)
+    const INTERP_DURATION = 0.04;
+    if (interpT.current < 1) {
+      interpT.current = Math.min(1, interpT.current + delta / INTERP_DURATION);
+      // Smooth step for easing
+      const t = interpT.current * interpT.current * (3 - 2 * interpT.current);
+      groupRef.current.position.lerpVectors(interpFrom.current, interpTo.current, t);
+    } else {
+      // Gently hold at target
+      groupRef.current.position.lerp(interpTo.current, 1 - Math.exp(-10 * delta));
+    }
 
     // Rotate penguin to face its direction
+    // Physics: direction 0° = +X, 90° = +Z
+    // Three.js: rotation.y = θ → forward = (-sin(θ), -cos(θ))
+    // To face (cos(rad), sin(rad)): targetRotY = -rad - π/2
     const dir = isCurrentPlayer && phase === "countdown" ? aimDirection : penguin.direction;
     const rad = (dir * Math.PI) / 180;
-    const targetRotY = -rad + Math.PI / 2;
+    const targetRotY = -rad - Math.PI / 2;
     groupRef.current.rotation.y +=
       (targetRotY - groupRef.current.rotation.y) * (1 - Math.exp(-10 * delta));
   });
@@ -110,7 +150,7 @@ function PenguinModel({ penguin, isCurrentPlayer, mapCenter }: PenguinModelProps
   const arrowColor = isCurrentPlayer ? "#ffcc00" : "#ff4444";
 
   return (
-    <group ref={groupRef} position={[cx, 0.5, cz]}>
+    <group ref={groupRef} position={[cx, y, cz]}>
       <primitive
         object={scene.clone()}
         scale={[1.2, 1.2, 1.2]}
@@ -135,6 +175,59 @@ function PenguinModel({ penguin, isCurrentPlayer, mapCenter }: PenguinModelProps
 }
 
 /* ------------------------------------------------------------------ */
+/*  Procedural ice tile texture                                       */
+/* ------------------------------------------------------------------ */
+function useIceTileTexture(length: number, width: number) {
+  return useMemo(() => {
+    const canvas = document.createElement("canvas");
+    const size = 512;
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d")!;
+
+    const tileSize = 32;
+    const cols = size / tileSize;
+    const rows = size / tileSize;
+
+    // Background
+    ctx.fillStyle = "#c8e6f0";
+    ctx.fillRect(0, 0, size, size);
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const x = c * tileSize;
+        const y = r * tileSize;
+
+        // Ice tile with subtle variation
+        const base = 200 + Math.random() * 25;
+        const rr = Math.floor(base - 15 + Math.random() * 10);
+        const gg = Math.floor(base + Math.random() * 15);
+        const bb = Math.floor(base + 15 + Math.random() * 15);
+
+        // Tile fill (slightly inset)
+        ctx.fillStyle = `rgb(${rr}, ${gg}, ${bb})`;
+        ctx.fillRect(x + 1, y + 1, tileSize - 2, tileSize - 2);
+
+        // Tile border / groove
+        ctx.strokeStyle = "rgba(100, 180, 220, 0.5)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, tileSize - 1, tileSize - 1);
+
+        // Subtle highlight on top-left edge
+        ctx.fillStyle = "rgba(255, 255, 255, 0.15)";
+        ctx.fillRect(x + 1, y + 1, tileSize - 2, 2);
+        ctx.fillRect(x + 1, y + 1, 2, tileSize - 2);
+      }
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(length / 4, width / 4);
+    return texture;
+  }, [length, width]);
+}
+
+/* ------------------------------------------------------------------ */
 /*  Platform                                                          */
 /* ------------------------------------------------------------------ */
 interface PlatformProps {
@@ -146,21 +239,20 @@ interface PlatformProps {
 function Platform({ length, width, mapType }: PlatformProps) {
   const meshRef = useRef<THREE.Mesh>(null!);
   const targetScale = useRef(new THREE.Vector3(length, 0.5, width));
+  const prevLength = useRef(length);
+  const prevWidth = useRef(width);
+  const shrinkFlash = useRef(0);
+
+  const tileTexture = useIceTileTexture(length, width);
+
+  // Detect map shrink
+  if (length < prevLength.current || width < prevWidth.current) {
+    shrinkFlash.current = 1.0;
+    prevLength.current = length;
+    prevWidth.current = width;
+  }
 
   targetScale.current.set(length, 0.5, width);
-
-  useFrame((_, delta) => {
-    if (!meshRef.current) return;
-    meshRef.current.scale.lerp(targetScale.current, 1 - Math.exp(-3 * delta));
-  });
-
-  const platformColor = {
-    frozen_lake: "#1a3a5c",
-    tundra_ring: "#2a4a6c",
-    glacier_pass: "#1e3e5e",
-    volcano_rim: "#5c2a1a",
-    neon_arena: "#1a1a3c",
-  }[mapType] || "#2a4a6c";
 
   const edgeColor = {
     frozen_lake: "#4dd0e1",
@@ -170,34 +262,51 @@ function Platform({ length, width, mapType }: PlatformProps) {
     neon_arena: "#e040fb",
   }[mapType] || "#80deea";
 
+  useFrame((_, delta) => {
+    if (!meshRef.current) return;
+    meshRef.current.scale.lerp(targetScale.current, 1 - Math.exp(-3 * delta));
+
+    // Fade out shrink flash
+    if (shrinkFlash.current > 0) {
+      shrinkFlash.current = Math.max(0, shrinkFlash.current - delta * 2);
+    }
+  });
+
   return (
     <group position={[0, 0, 0]}>
-      {/* Main platform — centered at origin */}
+      {/* Main platform with ice tile texture */}
       <mesh ref={meshRef} position={[0, -0.25, 0]} receiveShadow>
         <boxGeometry args={[1, 1, 1]} />
-        <meshStandardMaterial color={platformColor} roughness={0.4} metalness={0.1} />
+        <meshStandardMaterial
+          map={tileTexture}
+          roughness={0.3}
+          metalness={0.05}
+          color="#e0f0ff"
+        />
       </mesh>
-      {/* Glowing edge overlay */}
+
+      {/* Platform top surface overlay for extra brightness */}
       <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <planeGeometry args={[length + 0.2, width + 0.2]} />
-        <meshBasicMaterial color={edgeColor} transparent opacity={0.15} side={THREE.DoubleSide} />
+        <planeGeometry args={[length, width]} />
+        <meshBasicMaterial
+          color="#ffffff"
+          transparent
+          opacity={0.08}
+          side={THREE.DoubleSide}
+        />
       </mesh>
-      {/* Grid */}
-      <gridHelper
-        args={[Math.max(length, width), Math.max(length, width), 0x333333, 0x222222]}
-        position={[0, 0.03, 0]}
-      />
+
       {/* Edge glow lines */}
       {[-length / 2, length / 2].map((x) => (
         <mesh key={`x${x}`} position={[x, 0.1, 0]}>
-          <boxGeometry args={[0.1, 0.3, width]} />
-          <meshBasicMaterial color={edgeColor} transparent opacity={0.3} />
+          <boxGeometry args={[0.15, 0.35, width]} />
+          <meshBasicMaterial color={edgeColor} transparent opacity={0.4} />
         </mesh>
       ))}
       {[-width / 2, width / 2].map((z) => (
         <mesh key={`z${z}`} position={[0, 0.1, z]}>
-          <boxGeometry args={[length, 0.3, 0.1]} />
-          <meshBasicMaterial color={edgeColor} transparent opacity={0.3} />
+          <boxGeometry args={[length, 0.35, 0.15]} />
+          <meshBasicMaterial color={edgeColor} transparent opacity={0.4} />
         </mesh>
       ))}
     </group>
@@ -205,13 +314,13 @@ function Platform({ length, width, mapType }: PlatformProps) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Third-person camera — behind the player's penguin                 */
+/*  Camera — third-person during game, orbit during lobby             */
 /*  Supports: horizontal aim rotation, vertical pitch, scroll zoom    */
 /* ------------------------------------------------------------------ */
-function ThirdPersonCamera({ playerId, mapCenter }: { playerId: string; mapCenter: { x: number; z: number } }) {
-  const currentCamPos = useRef(new THREE.Vector3(0, 8, 12));
+function GameCamera({ playerId, mapCenter }: { playerId: string; mapCenter: { x: number; z: number } }) {
+  const currentCamPos = useRef(new THREE.Vector3(0, 15, 25));
   const currentLookAt = useRef(new THREE.Vector3());
-  const camPitch = useRef(0.35); // radians, 0 = level, positive = looking down
+  const camPitch = useRef(0.35);
   const camDist = useRef(12);
 
   // Scroll to zoom
@@ -251,11 +360,25 @@ function ThirdPersonCamera({ playerId, mapCenter }: { playerId: string; mapCente
     };
   }, []);
 
-  useFrame(({ camera }, delta) => {
+  useFrame(({ camera, clock }, delta) => {
     const gs = useGameStore.getState().gameState;
     const phase = useGameStore.getState().phase;
     const aimDirection = useGameStore.getState().aimDirection;
     if (!gs) return;
+
+    // Lobby: gentle orbit around map center
+    if (phase === "lobby") {
+      const t = clock.getElapsedTime();
+      const dist = camDist.current + 8;
+      const camX = Math.cos(t * 0.15) * dist;
+      const camZ = Math.sin(t * 0.15) * dist;
+      const desiredPos = new THREE.Vector3(camX, 14, camZ);
+      currentCamPos.current.lerp(desiredPos, 1 - Math.exp(-2 * delta));
+      currentLookAt.current.lerp(new THREE.Vector3(0, 0, 0), 1 - Math.exp(-2 * delta));
+      camera.position.copy(currentCamPos.current);
+      camera.lookAt(currentLookAt.current);
+      return;
+    }
 
     const player = gs.players[playerId];
 
@@ -314,25 +437,25 @@ export default function GameArena({ playerId }: GameArenaProps) {
     <div style={{ position: "absolute", top: 0, left: 0, width: "100vw", height: "100vh" }}>
       <Canvas
         shadows={{ type: THREE.PCFShadowMap }}
-        camera={{ position: [0, 8, 12], fov: 60, near: 0.1, far: 500 }}
+        camera={{ position: [0, 15, 25], fov: 60, near: 0.1, far: 500 }}
         gl={{ alpha: false, antialias: true, powerPreference: "high-performance" }}
         onCreated={({ gl }) => {
-          gl.setClearColor(0x1a1a2e, 1);
+          gl.setClearColor(0x87ceeb, 1);
           gl.toneMapping = THREE.ACESFilmicToneMapping;
-          gl.toneMappingExposure = 1.6;
+          gl.toneMappingExposure = 1.8;
         }}
       >
-        {/* Scene background */}
-        <color attach="background" args={["#1a1a2e"]} />
+        {/* Sky background — bright blue */}
+        <color attach="background" args={["#87ceeb"]} />
 
-        {/* Fog — pushed back for visibility */}
-        <fog attach="fog" args={["#1a1a2e", 80, 300]} />
+        {/* Fog — far away for visibility */}
+        <fog attach="fog" args={["#87ceeb", 100, 350]} />
 
-        {/* Lighting — brighter for better visibility */}
-        <ambientLight intensity={1.2} />
+        {/* Lighting — bright and clear like reference */}
+        <ambientLight intensity={1.4} />
         <directionalLight
-          position={[30, 40, 20]}
-          intensity={2.0}
+          position={[30, 50, 25]}
+          intensity={2.2}
           castShadow
           shadow-mapSize-width={2048}
           shadow-mapSize-height={2048}
@@ -342,12 +465,12 @@ export default function GameArena({ playerId }: GameArenaProps) {
           shadow-camera-top={60}
           shadow-camera-bottom={-60}
         />
-        <directionalLight position={[-20, 20, -10]} intensity={0.6} />
-        <pointLight position={[0, 20, 0]} intensity={0.8} color="#22d3ee" />
-        <hemisphereLight args={["#b4d7ff", "#666666", 0.6]} />
+        <directionalLight position={[-20, 25, -15]} intensity={0.8} />
+        <pointLight position={[0, 25, 0]} intensity={0.5} color="#ffffff" />
+        <hemisphereLight args={["#b4d7ff", "#88aacc", 0.8]} />
 
-        {/* Third-person camera */}
-        <ThirdPersonCamera playerId={playerId} mapCenter={mapCenter} />
+        {/* Camera */}
+        <GameCamera playerId={playerId} mapCenter={mapCenter} />
 
         {/* Platform — centered at origin */}
         <Platform
@@ -356,15 +479,15 @@ export default function GameArena({ playerId }: GameArenaProps) {
           mapType={gameState.map.type}
         />
 
-        {/* Void below platform */}
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -5, 0]}>
-          <planeGeometry args={[300, 300]} />
-          <meshStandardMaterial color="#0d0d1a" transparent opacity={0.9} />
+        {/* Water/void below platform */}
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -3, 0]}>
+          <planeGeometry args={[400, 400]} />
+          <meshStandardMaterial color="#2196f3" transparent opacity={0.7} roughness={0.2} metalness={0.3} />
         </mesh>
 
         {/* Environment + Penguins — wrapped in Suspense */}
         <Suspense fallback={null}>
-          <EnvironmentModel mapType={gameState.map.type} center={[0, 0, 0]} />
+          <EnvironmentModel mapType={gameState.map.type} />
           {players.map((penguin) => (
             <PenguinModel
               key={penguin.id}

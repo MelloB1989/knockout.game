@@ -16,10 +16,12 @@ export default function GameOverOverlay({ onPlayAgain }: GameOverOverlayProps) {
   const myPlayer = players.find((p) => p.id === playerId);
   const eliminatedRound = myPlayer?.eliminated || 0;
 
-  // Sort by elimination: winner first, then by elimination round desc
+  // Sort by: winner first, then by score desc, then by elimination round desc
   const sortedPlayers = [...players].sort((a, b) => {
     if (a.eliminated === 0 && b.eliminated !== 0) return -1;
     if (b.eliminated === 0 && a.eliminated !== 0) return 1;
+    if (a.eliminated === 0 && b.eliminated === 0) return (b.score ?? 0) - (a.score ?? 0);
+    if ((b.score ?? 0) !== (a.score ?? 0)) return (b.score ?? 0) - (a.score ?? 0);
     return b.eliminated - a.eliminated;
   });
 
@@ -75,6 +77,9 @@ export default function GameOverOverlay({ onPlayAgain }: GameOverOverlayProps) {
                 </span>
                 <span className="flex-1 text-left text-white font-medium truncate">
                   {p.id}
+                </span>
+                <span className="text-sm text-cyan-400 font-bold tabular-nums mr-2">
+                  {p.score ?? 0}
                 </span>
                 <span className="text-xs text-white/40">
                   {p.eliminated === 0 ? (

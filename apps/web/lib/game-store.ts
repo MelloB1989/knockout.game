@@ -34,7 +34,7 @@ interface GameStore {
   aimPower: number;
 
   // Elimination & end
-  eliminatedThisRound: string[];
+  eliminatedThisRound: { playerId: string; eliminatedBy?: string }[];
   winnerId: string | null;
 
   // Animated positions (for smooth interpolation)
@@ -79,7 +79,7 @@ const initialState = {
   roundMoves: null,
   aimDirection: 0,
   aimPower: 6,
-  eliminatedThisRound: [],
+  eliminatedThisRound: [] as { playerId: string; eliminatedBy?: string }[],
   winnerId: null,
   animatedPositions: {},
 };
@@ -96,10 +96,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
         positions[id] = { x: p.position.x, z: p.position.z };
       }
     }
+    const pid = get().playerId;
     set({
       gameState: gs,
       currentRound: gs?.current_round ?? 1,
       animatedPositions: positions,
+      isHost: !!(pid && gs?.host_id === pid),
       phase: gs?.started ? (get().phase === "idle" ? "playing" : get().phase) : "lobby",
     });
   },
@@ -108,12 +110,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   handleCountdown: (payload) => {
     const prevPhase = get().phase;
-    const currentAimDir = get().aimDirection;
     const currentAimPower = get().aimPower;
 
     // When transitioning from non-countdown (e.g. animating) to countdown,
     // initialize aim from the player's last direction in game state
-    let newAimDir = currentAimDir;
+    let newAimDir = get().aimDirection;
     if (prevPhase !== "countdown") {
       const pid = get().playerId;
       const gs = get().gameState;
@@ -155,7 +156,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   handlePlayerEliminated: (payload) => {
     set((s) => ({
-      eliminatedThisRound: [...s.eliminatedThisRound, payload.player_id],
+      eliminatedThisRound: [
+        ...s.eliminatedThisRound,
+        { playerId: payload.player_id, eliminatedBy: payload.eliminated_by },
+      ],
     }));
   },
 

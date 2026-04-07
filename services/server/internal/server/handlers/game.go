@@ -482,12 +482,20 @@ func startGameLoop(gameId string) {
 			}, nil)
 
 			for _, player := range eliminatedPlayers(game.GameState, round) {
+				eliminatedBy := ""
+				if game.GameState.LastHitBy != nil {
+					if hitter, ok := game.GameState.LastHitBy[player.Id]; ok {
+						eliminatedBy = hitter
+					}
+				}
 				_ = game.PublishEvent(repository.PlayerEliminated, struct {
-					PlayerId string `json:"player_id"`
-					Round    int    `json:"round"`
+					PlayerId    string `json:"player_id"`
+					Round       int    `json:"round"`
+					EliminatedBy string `json:"eliminated_by,omitempty"`
 				}{
-					PlayerId: player.Id,
-					Round:    player.Eliminated,
+					PlayerId:    player.Id,
+					Round:       player.Eliminated,
+					EliminatedBy: eliminatedBy,
 				}, nil)
 			}
 
