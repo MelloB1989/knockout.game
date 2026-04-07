@@ -49,8 +49,7 @@ export function connectToGame(gameId: string, token: string) {
     if (pendingRegistration) {
       sendEvent("register_player", pendingRegistration);
       pendingRegistration = null;
-      // Delay get_state to allow remote Redis write to propagate
-      setTimeout(() => sendEvent("get_state"), 1000);
+      sendEvent("get_state");
     } else {
       // Already registered (e.g. host) — just fetch state
       sendEvent("get_state");
@@ -68,7 +67,11 @@ export function connectToGame(gameId: string, token: string) {
 
   ws.onclose = () => {
     const phase = useGameStore.getState().phase;
-    if (!intentionalClose && phase !== "ended" && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+    if (
+      !intentionalClose &&
+      phase !== "ended" &&
+      reconnectAttempts < MAX_RECONNECT_ATTEMPTS
+    ) {
       reconnectAttempts++;
       reconnectTimer = setTimeout(() => {
         connectToGame(gameId, token);
@@ -104,7 +107,7 @@ export function sendEvent(event: string, data?: unknown) {
 export function registerPlayer(player: Partial<Penguin>) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     sendEvent("register_player", player);
-    setTimeout(() => sendEvent("get_state"), 1000);
+    sendEvent("get_state");
   } else {
     // Queue for when WS opens
     pendingRegistration = player;
@@ -158,7 +161,9 @@ function handleServerEvent(msg: OutgoingMessage) {
     }
     case "game_ended": {
       const payload = msg.data as GameEndedPayload;
-      const gs = (msg as { data?: GameEndedPayload; game_state?: GameState }).game_state ?? null;
+      const gs =
+        (msg as { data?: GameEndedPayload; game_state?: GameState })
+          .game_state ?? null;
       store.handleGameEnded(payload, gs);
       break;
     }

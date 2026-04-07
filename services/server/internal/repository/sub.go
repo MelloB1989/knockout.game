@@ -4,15 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"knockout/internal/physics"
-	"time"
 
 	"github.com/redis/go-redis/v9"
 )
 
 type Subscription struct {
-	pubsub  *redis.PubSub
-	channel <-chan *redis.Message
-	gameId  string
+	pubsub *redis.PubSub
 }
 
 type GameEvents string
@@ -41,26 +38,15 @@ func (g *Game) Subscribe() *Subscription {
 	g.ensureRedis()
 	pubsub := g.rc.Subscribe(ctx, gamePubKey(g.Id))
 
-	channel := pubsub.Channel(
-		redis.WithChannelHealthCheckInterval(30*time.Second),
-		redis.WithChannelSendTimeout(10*time.Second),
-	)
-
 	return &Subscription{
-		pubsub:  pubsub,
-		channel: channel,
-		gameId:  g.Id,
+		pubsub: pubsub,
 	}
 }
 
-func (sub *Subscription) Channel() <-chan *redis.Message {
-	return sub.channel
-}
-
 func (sub *Subscription) ReceiveEvent() (*PubSubEvent, error) {
-	msg, ok := <-sub.channel
-	if !ok {
-		return nil, fmt.Errorf("subscription closed")
+	msg, err := sub.pubsub.ReceiveMessage(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to receive event: %w", err)
 	}
 
 	var event PubSubEvent

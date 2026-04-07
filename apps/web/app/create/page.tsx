@@ -8,29 +8,112 @@ import { createGame, getMaps } from "@/lib/api";
 import { ALL_SKINS } from "@/lib/constants";
 import { motion, AnimatePresence } from "framer-motion";
 import dynamic from "next/dynamic";
-import type { MapConfig } from "@/lib/types";
+import type { GameState, MapConfig } from "@/lib/types";
 
-const PenguinPreview = dynamic(() => import("@/components/ui/PenguinPreview"), { ssr: false });
+const PenguinPreview = dynamic(() => import("@/components/ui/PenguinPreview"), {
+  ssr: false,
+});
 
-const SKIN_DATA: Record<string, { name: string; gradient: string; emoji: string; ring: string }> = {
-  default: { name: "Classic", gradient: "from-neutral-500 to-neutral-700", emoji: "🐧", ring: "#6B7280" },
-  icy: { name: "Icy", gradient: "from-gray-300 to-gray-500", emoji: "❄️", ring: "#9CA3AF" },
-  lava: { name: "Lava", gradient: "from-red-500 to-orange-600", emoji: "🔥", ring: "#EF4444" },
-  forest: { name: "Forest", gradient: "from-green-500 to-emerald-700", emoji: "🌿", ring: "#22C55E" },
-  neon: { name: "Neon", gradient: "from-yellow-400 to-amber-500", emoji: "⚡", ring: "#EAB308" },
-  shadow: { name: "Shadow", gradient: "from-neutral-700 to-neutral-900", emoji: "🌑", ring: "#404040" },
-  pink: { name: "Pink", gradient: "from-pink-400 to-rose-500", emoji: "🌸", ring: "#EC4899" },
-  shark: { name: "Shark", gradient: "from-neutral-500 to-neutral-700", emoji: "🦈", ring: "#6B7280" },
-  tuxedo: { name: "Tuxedo", gradient: "from-neutral-800 to-neutral-950", emoji: "🎩", ring: "#262626" },
-  goldking: { name: "Gold King", gradient: "from-yellow-500 to-amber-600", emoji: "👑", ring: "#F59E0B" },
+const SKIN_DATA: Record<
+  string,
+  { name: string; gradient: string; emoji: string; ring: string }
+> = {
+  default: {
+    name: "Classic",
+    gradient: "from-neutral-500 to-neutral-700",
+    emoji: "🐧",
+    ring: "#6B7280",
+  },
+  icy: {
+    name: "Icy",
+    gradient: "from-gray-300 to-gray-500",
+    emoji: "❄️",
+    ring: "#9CA3AF",
+  },
+  lava: {
+    name: "Lava",
+    gradient: "from-red-500 to-orange-600",
+    emoji: "🔥",
+    ring: "#EF4444",
+  },
+  forest: {
+    name: "Forest",
+    gradient: "from-green-500 to-emerald-700",
+    emoji: "🌿",
+    ring: "#22C55E",
+  },
+  neon: {
+    name: "Neon",
+    gradient: "from-yellow-400 to-amber-500",
+    emoji: "⚡",
+    ring: "#EAB308",
+  },
+  shadow: {
+    name: "Shadow",
+    gradient: "from-neutral-700 to-neutral-900",
+    emoji: "🌑",
+    ring: "#404040",
+  },
+  pink: {
+    name: "Pink",
+    gradient: "from-pink-400 to-rose-500",
+    emoji: "🌸",
+    ring: "#EC4899",
+  },
+  shark: {
+    name: "Shark",
+    gradient: "from-neutral-500 to-neutral-700",
+    emoji: "🦈",
+    ring: "#6B7280",
+  },
+  tuxedo: {
+    name: "Tuxedo",
+    gradient: "from-neutral-800 to-neutral-950",
+    emoji: "🎩",
+    ring: "#262626",
+  },
+  goldking: {
+    name: "Gold King",
+    gradient: "from-yellow-500 to-amber-600",
+    emoji: "👑",
+    ring: "#F59E0B",
+  },
 };
 
-const ENV_DATA: Record<string, { name: string; emoji: string; gradient: string; desc: string }> = {
-  Arctic: { name: "Arctic", emoji: "❄️", gradient: "from-gray-200/10 to-gray-400/5", desc: "Icy tundra" },
-  Beach: { name: "Beach", emoji: "🏖️", gradient: "from-amber-400/10 to-orange-400/5", desc: "Sunny shores" },
-  Desert: { name: "Desert", emoji: "🌋", gradient: "from-orange-500/10 to-red-500/5", desc: "Volcanic heat" },
-  Rainy: { name: "Rainy", emoji: "🌧️", gradient: "from-gray-400/10 to-gray-600/5", desc: "Storm clouds" },
-  Dystopian: { name: "Dystopian", emoji: "⚡", gradient: "from-emerald-500/10 to-green-700/5", desc: "Neon wasteland" },
+const ENV_DATA: Record<
+  string,
+  { name: string; emoji: string; gradient: string; desc: string }
+> = {
+  Arctic: {
+    name: "Arctic",
+    emoji: "❄️",
+    gradient: "from-gray-200/10 to-gray-400/5",
+    desc: "Icy tundra",
+  },
+  Beach: {
+    name: "Beach",
+    emoji: "🏖️",
+    gradient: "from-amber-400/10 to-orange-400/5",
+    desc: "Sunny shores",
+  },
+  Desert: {
+    name: "Desert",
+    emoji: "🌋",
+    gradient: "from-orange-500/10 to-red-500/5",
+    desc: "Volcanic heat",
+  },
+  Rainy: {
+    name: "Rainy",
+    emoji: "🌧️",
+    gradient: "from-gray-400/10 to-gray-600/5",
+    desc: "Storm clouds",
+  },
+  Dystopian: {
+    name: "Dystopian",
+    emoji: "⚡",
+    gradient: "from-emerald-500/10 to-green-700/5",
+    desc: "Neon wasteland",
+  },
 };
 
 const MAP_ENV: Record<string, string> = {
@@ -44,7 +127,7 @@ const MAP_ENV: Record<string, string> = {
 export default function CreatePage() {
   const router = useRouter();
   const { token, isReady } = useAuthStore();
-  const { setGameId, setIsHost } = useGameStore();
+  const { setGameId, setGameState, setIsHost } = useGameStore();
 
   const [maps, setMaps] = useState<MapConfig[]>([]);
   const [selectedMap, setSelectedMap] = useState("");
@@ -53,9 +136,15 @@ export default function CreatePage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    if (!isReady) { router.replace("/"); return; }
+    if (!isReady) {
+      router.replace("/");
+      return;
+    }
     getMaps()
-      .then((m) => { setMaps(m); if (m.length > 0 && m[0]) setSelectedMap(m[0].id); })
+      .then((m) => {
+        setMaps(m);
+        if (m.length > 0 && m[0]) setSelectedMap(m[0].id);
+      })
       .catch(() => setError("Failed to load maps"));
   }, [isReady, router]);
 
@@ -64,9 +153,13 @@ export default function CreatePage() {
     setLoading(true);
     setError("");
     try {
-      const res = await createGame(token, { map_type: selectedMap, skin: selectedSkin });
+      const res = await createGame(token, {
+        map_type: selectedMap,
+        skin: selectedSkin,
+      });
       sessionStorage.setItem("selectedSkin", selectedSkin);
       setGameId(res.game_id);
+      setGameState(res.game_state as GameState);
       setIsHost(true);
       router.push(`/game/${res.game_id}`);
     } catch (e) {
@@ -125,7 +218,8 @@ export default function CreatePage() {
                 style={{
                   borderColor: skinInfo.ring + "60",
                   boxShadow: `0 0 30px ${skinInfo.ring}20, 0 0 60px ${skinInfo.ring}10`,
-                  background: "linear-gradient(135deg, #1C1814 0%, #0F0D0A 100%)",
+                  background:
+                    "linear-gradient(135deg, #1C1814 0%, #0F0D0A 100%)",
                 }}
               >
                 <PenguinPreview skin={selectedSkin} width={240} height={280} />
@@ -162,7 +256,9 @@ export default function CreatePage() {
                           : "border-[var(--border-warm)] bg-[var(--bg-card)] hover:border-[var(--accent-gold)]/30 hover:bg-[var(--bg-card-hover)]"
                       }`}
                     >
-                      <div className={`w-8 h-8 rounded-full bg-gradient-to-br ${info.gradient} flex items-center justify-center text-base`}>
+                      <div
+                        className={`w-8 h-8 rounded-full bg-gradient-to-br ${info.gradient} flex items-center justify-center text-base`}
+                      >
                         {info.emoji}
                       </div>
                       <span className="text-[10px] font-[family-name:var(--font-fredoka)] font-medium text-[var(--text-muted)]">
@@ -173,8 +269,19 @@ export default function CreatePage() {
                           className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-[var(--accent-orange)] flex items-center justify-center"
                           layoutId="skin-check"
                         >
-                          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                            <path d="M2 5L4 7L8 3" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                          <svg
+                            width="10"
+                            height="10"
+                            viewBox="0 0 10 10"
+                            fill="none"
+                          >
+                            <path
+                              d="M2 5L4 7L8 3"
+                              stroke="white"
+                              strokeWidth="1.5"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
                           </svg>
                         </motion.div>
                       )}
@@ -211,7 +318,9 @@ export default function CreatePage() {
                   }`}
                 >
                   {/* Themed gradient overlay */}
-                  <div className={`absolute inset-0 bg-gradient-to-br ${env.gradient} pointer-events-none`} />
+                  <div
+                    className={`absolute inset-0 bg-gradient-to-br ${env.gradient} pointer-events-none`}
+                  />
 
                   <div className="relative flex items-start gap-3">
                     <div className="text-3xl mt-0.5">{env.emoji}</div>
@@ -219,7 +328,9 @@ export default function CreatePage() {
                       <p className="font-[family-name:var(--font-fredoka)] font-semibold text-[var(--text-warm)] text-base">
                         {m.name}
                       </p>
-                      <p className="text-xs text-[var(--text-muted)] mt-0.5">{env.desc}</p>
+                      <p className="text-xs text-[var(--text-muted)] mt-0.5">
+                        {env.desc}
+                      </p>
                       <div className="flex gap-3 mt-2">
                         <span className="text-[10px] text-[var(--text-dim)] bg-white/5 px-2 py-0.5 rounded-md font-mono">
                           {m.length}×{m.width}
@@ -246,7 +357,9 @@ export default function CreatePage() {
         </button>
 
         {error && (
-          <p className="text-[var(--accent-red)] text-sm text-center font-medium">{error}</p>
+          <p className="text-[var(--accent-red)] text-sm text-center font-medium">
+            {error}
+          </p>
         )}
       </motion.div>
     </main>

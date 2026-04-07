@@ -78,8 +78,7 @@ function useWebGLAvailable() {
   useEffect(() => {
     try {
       const canvas = document.createElement("canvas");
-      const gl =
-        canvas.getContext("webgl2") || canvas.getContext("webgl");
+      const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
       setAvailable(!!gl);
       if (gl) {
         const ext = gl.getExtension("WEBGL_lose_context");
@@ -109,6 +108,9 @@ interface PenguinTracker {
   isEliminated: boolean;
 }
 
+const LOBBY_INTERP_DURATION = 0.04;
+const SERVER_INTERP_DURATION = 0.08;
+
 /* ------------------------------------------------------------------ */
 /*  Build a flat 2D arrow mesh (lies in XZ plane, points +Z)          */
 /* ------------------------------------------------------------------ */
@@ -121,22 +123,42 @@ function createArrowMesh(scene: Scene, name: string, color: Color3): Mesh {
   // Arrow in XZ plane, pointing +Z
   const positions = [
     // Shaft (quad: 2 triangles)
-    -shaftW, 0, 0,
-     shaftW, 0, 0,
-     shaftW, 0, shaftLen,
-    -shaftW, 0, shaftLen,
+    -shaftW,
+    0,
+    0,
+    shaftW,
+    0,
+    0,
+    shaftW,
+    0,
+    shaftLen,
+    -shaftW,
+    0,
+    shaftLen,
     // Head (triangle)
-    -headW, 0, shaftLen,
-     headW, 0, shaftLen,
-     0,     0, shaftLen + headLen,
+    -headW,
+    0,
+    shaftLen,
+    headW,
+    0,
+    shaftLen,
+    0,
+    0,
+    shaftLen + headLen,
   ];
   const indices = [
-    0, 1, 2, 0, 2, 3,  // shaft
-    4, 5, 6,            // head
+    0,
+    1,
+    2,
+    0,
+    2,
+    3, // shaft
+    4,
+    5,
+    6, // head
   ];
   const normals = [
-    0, 1, 0,  0, 1, 0,  0, 1, 0,  0, 1, 0,
-    0, 1, 0,  0, 1, 0,  0, 1, 0,
+    0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0,
   ];
 
   const mesh = new Mesh(name, scene);
@@ -225,13 +247,13 @@ class GameScene {
       Math.PI / 3,
       25,
       Vector3.Zero(),
-      this.scene
+      this.scene,
     );
     this.camera.lowerRadiusLimit = 5;
     this.camera.upperRadiusLimit = 60;
     this.camera.lowerBetaLimit = 0.1;
     this.camera.upperBetaLimit = Math.PI / 2.1;
-    this.camera.minZ = 0.5;  // tighter near plane reduces z-fighting
+    this.camera.minZ = 0.5; // tighter near plane reduces z-fighting
     this.camera.maxZ = 300;
     this.camera.attachControl(canvas, true);
     // Disable default panning/keyboard so game controls work
@@ -247,7 +269,11 @@ class GameScene {
     hemi.diffuse = new Color3(0.95, 0.95, 0.97);
     hemi.groundColor = new Color3(0.7, 0.72, 0.75);
 
-    const dir = new DirectionalLight("dir", new Vector3(-1, -2, -1).normalize(), this.scene);
+    const dir = new DirectionalLight(
+      "dir",
+      new Vector3(-1, -2, -1).normalize(),
+      this.scene,
+    );
     dir.position = new Vector3(30, 50, 25);
     dir.intensity = 1.5;
     dir.diffuse = new Color3(1, 0.99, 0.96);
@@ -260,10 +286,14 @@ class GameScene {
     dir.shadowMaxZ = 100;
 
     // Water plane
-    this.waterPlane = MeshBuilder.CreateGround("water", {
-      width: 200,
-      height: 200,
-    }, this.scene);
+    this.waterPlane = MeshBuilder.CreateGround(
+      "water",
+      {
+        width: 200,
+        height: 200,
+      },
+      this.scene,
+    );
     this.waterPlane.position.y = -3;
     const waterMat = new StandardMaterial("waterMat", this.scene);
     waterMat.diffuseColor = new Color3(0.35, 0.6, 0.78);
@@ -292,11 +322,13 @@ class GameScene {
     // Lobby WASD key listeners
     this.lobbyKeyHandler = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase();
-      if (k in this.lobbyKeys) (this.lobbyKeys as Record<string, boolean>)[k] = true;
+      if (k in this.lobbyKeys)
+        (this.lobbyKeys as Record<string, boolean>)[k] = true;
     };
     this.lobbyKeyUpHandler = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase();
-      if (k in this.lobbyKeys) (this.lobbyKeys as Record<string, boolean>)[k] = false;
+      if (k in this.lobbyKeys)
+        (this.lobbyKeys as Record<string, boolean>)[k] = false;
     };
     window.addEventListener("keydown", this.lobbyKeyHandler);
     window.addEventListener("keyup", this.lobbyKeyUpHandler);
@@ -327,24 +359,31 @@ class GameScene {
       this.pendingPenguinLoads.add(id);
     }
 
-    // Load map block template
-    await this.loadMapBlockTemplate();
+    const uniqueSkins = [
+      ...new Set(Object.values(gs.players).map((player) => player.skin)),
+    ];
 
-    // Build tiled platform
+    await Promise.all([
+      this.loadMapBlockTemplate(),
+      this.loadEnvironment(gs.map.type),
+      ...uniqueSkins.map((skin) => this.loadSkin(skin)),
+    ]);
+
     this.buildPlatform(gs.map.length, gs.map.width);
     this.renderedMapLength = gs.map.length;
     this.renderedMapWidth = gs.map.width;
 
-    // Load environment
-    await this.loadEnvironment(gs.map.type);
-
-    // Load all penguin skins & create instances
     await this.loadPenguins(gs);
   }
 
   private async loadMapBlockTemplate() {
     try {
-      const result = await SceneLoader.ImportMeshAsync("", "/assets/", "MapBlock.glb", this.scene);
+      const result = await SceneLoader.ImportMeshAsync(
+        "",
+        "/assets/",
+        "MapBlock.glb",
+        this.scene,
+      );
       // Hide originals, store as template
       this.mapBlockTemplate = result.meshes;
       for (const m of result.meshes) {
@@ -370,7 +409,10 @@ class GameScene {
         for (let iz = 0; iz < tilesZ; iz++) {
           for (const orig of this.mapBlockTemplate) {
             if (!orig.name || orig.name === "__root__") continue;
-            const clone = (orig as Mesh).clone(`tile_${ix}_${iz}_${orig.name}`, this.platformRoot);
+            const clone = (orig as Mesh).clone(
+              `tile_${ix}_${iz}_${orig.name}`,
+              this.platformRoot,
+            );
             if (!clone) continue;
             clone.setEnabled(true);
             clone.position.x += offsetX + ix * blockSize;
@@ -382,11 +424,15 @@ class GameScene {
       }
     } else {
       // Fallback: simple box
-      const platform = MeshBuilder.CreateBox("platform_fallback", {
-        width: mapLength,
-        height: 0.5,
-        depth: mapWidth,
-      }, this.scene);
+      const platform = MeshBuilder.CreateBox(
+        "platform_fallback",
+        {
+          width: mapLength,
+          height: 0.5,
+          depth: mapWidth,
+        },
+        this.scene,
+      );
       platform.position.y = -0.25;
       const mat = new StandardMaterial("platformMat", this.scene);
       mat.diffuseColor = new Color3(0.75, 0.82, 0.88);
@@ -407,15 +453,45 @@ class GameScene {
     edgeMat.alpha = 0.92;
 
     const edges = [
-      { name: "edge_n", w: mapLength + edgeThickness, d: edgeThickness, x: 0, z: halfW + edgeThickness / 2 },
-      { name: "edge_s", w: mapLength + edgeThickness, d: edgeThickness, x: 0, z: -halfW - edgeThickness / 2 },
-      { name: "edge_e", w: edgeThickness, d: mapWidth + edgeThickness, x: halfL + edgeThickness / 2, z: 0 },
-      { name: "edge_w", w: edgeThickness, d: mapWidth + edgeThickness, x: -halfL - edgeThickness / 2, z: 0 },
+      {
+        name: "edge_n",
+        w: mapLength + edgeThickness,
+        d: edgeThickness,
+        x: 0,
+        z: halfW + edgeThickness / 2,
+      },
+      {
+        name: "edge_s",
+        w: mapLength + edgeThickness,
+        d: edgeThickness,
+        x: 0,
+        z: -halfW - edgeThickness / 2,
+      },
+      {
+        name: "edge_e",
+        w: edgeThickness,
+        d: mapWidth + edgeThickness,
+        x: halfL + edgeThickness / 2,
+        z: 0,
+      },
+      {
+        name: "edge_w",
+        w: edgeThickness,
+        d: mapWidth + edgeThickness,
+        x: -halfL - edgeThickness / 2,
+        z: 0,
+      },
     ];
     for (const e of edges) {
-      const wall = MeshBuilder.CreateBox(e.name, {
-        width: e.w, height: edgeH, depth: e.d,
-      }, this.scene);
+      const wall = MeshBuilder.CreateBox(
+        e.name,
+        {
+          width: e.w,
+          height: edgeH,
+          depth: e.d,
+        },
+        this.scene,
+      );
       wall.position = new Vector3(e.x, -edgeH / 2 + 0.15, e.z);
       wall.material = edgeMat;
       wall.receiveShadows = true;
@@ -423,11 +499,15 @@ class GameScene {
     }
 
     // Underside slab (visible ice block depth)
-    const underside = MeshBuilder.CreateBox("platform_under", {
-      width: mapLength + edgeThickness * 2,
-      height: 0.8,
-      depth: mapWidth + edgeThickness * 2,
-    }, this.scene);
+    const underside = MeshBuilder.CreateBox(
+      "platform_under",
+      {
+        width: mapLength + edgeThickness * 2,
+        height: 0.8,
+        depth: mapWidth + edgeThickness * 2,
+      },
+      this.scene,
+    );
     underside.position.y = -edgeH + 0.55;
     const undersideMat = new StandardMaterial("undersideMat", this.scene);
     undersideMat.diffuseColor = new Color3(0.65, 0.82, 0.92);
@@ -440,7 +520,12 @@ class GameScene {
   private async loadEnvironment(mapType: string) {
     const glbPath = mapToEnvironmentGlb(mapType);
     try {
-      const result = await SceneLoader.ImportMeshAsync("", "", glbPath, this.scene);
+      const result = await SceneLoader.ImportMeshAsync(
+        "",
+        "",
+        glbPath,
+        this.scene,
+      );
       this.environmentRoot = new TransformNode("env", this.scene);
       for (const m of result.meshes) {
         m.parent = this.environmentRoot;
@@ -449,8 +534,8 @@ class GameScene {
       this.environmentRoot.scaling = new Vector3(1, 1, 1);
 
       // Find spectator stage (SpecFloor or SpecBase) for lobby/eliminated positioning
-      const specFloor = result.meshes.find(m =>
-        m.name === "SpecFloor" || m.name === "SpecBase"
+      const specFloor = result.meshes.find(
+        (m) => m.name === "SpecFloor" || m.name === "SpecBase",
       );
       if (specFloor) {
         specFloor.computeWorldMatrix(true);
@@ -459,8 +544,14 @@ class GameScene {
 
         // Compute stage bounds from bounding box
         const bb = specFloor.getBoundingInfo().boundingBox;
-        const minW = Vector3.TransformCoordinates(bb.minimum, specFloor.getWorldMatrix());
-        const maxW = Vector3.TransformCoordinates(bb.maximum, specFloor.getWorldMatrix());
+        const minW = Vector3.TransformCoordinates(
+          bb.minimum,
+          specFloor.getWorldMatrix(),
+        );
+        const maxW = Vector3.TransformCoordinates(
+          bb.maximum,
+          specFloor.getWorldMatrix(),
+        );
         this.stageY = maxW.y + 0.5; // stand on top surface of the floor
         this.stageHalfX = Math.abs(maxW.x - minW.x) / 2 - 0.5;
         this.stageHalfZ = Math.abs(maxW.z - minW.z) / 2 - 0.5;
@@ -475,7 +566,12 @@ class GameScene {
 
     const glbPath = skinToGlb(skin);
     try {
-      const result = await SceneLoader.ImportMeshAsync("", "", glbPath, this.scene);
+      const result = await SceneLoader.ImportMeshAsync(
+        "",
+        "",
+        glbPath,
+        this.scene,
+      );
       // Disable originals (used as templates)
       for (const m of result.meshes) {
         m.setEnabled(false);
@@ -513,7 +609,12 @@ class GameScene {
       for (const orig of templateMeshes) {
         if (!orig.name || orig.name === "__root__") continue;
         // If parent is another template mesh (not __root__), skip — auto-cloned by parent
-        if (orig.parent && orig.parent.name !== "__root__" && templateSet.has(orig.parent as AbstractMesh)) continue;
+        if (
+          orig.parent &&
+          orig.parent.name !== "__root__" &&
+          templateSet.has(orig.parent as AbstractMesh)
+        )
+          continue;
         const clone = (orig as Mesh).clone(`${id}_${orig.name}`, root);
         if (!clone) continue;
         clone.setEnabled(true);
@@ -542,11 +643,15 @@ class GameScene {
 
       // Glow ring for current player
       if (isCurrentPlayer) {
-        const ring = MeshBuilder.CreateTorus(`ring_${id}`, {
-          diameter: 2.0,
-          thickness: 0.15,
-          tessellation: 32,
-        }, this.scene);
+        const ring = MeshBuilder.CreateTorus(
+          `ring_${id}`,
+          {
+            diameter: 2.0,
+            thickness: 0.15,
+            tessellation: 32,
+          },
+          this.scene,
+        );
         ring.parent = root;
         ring.position.y = 0.05;
         const ringMat = new StandardMaterial(`ringMat_${id}`, this.scene);
@@ -580,7 +685,7 @@ class GameScene {
   /* ── Rebuild platform when map shrinks ── */
   private rebuildPlatform(newLength: number, newWidth: number) {
     if (this.platformRoot) {
-      this.platformRoot.getChildMeshes(false).forEach(m => m.dispose());
+      this.platformRoot.getChildMeshes(false).forEach((m) => m.dispose());
       this.platformRoot.dispose();
       this.platformRoot = null;
     }
@@ -604,7 +709,8 @@ class GameScene {
     // Detect map shrink → rebuild platform
     if (
       this.renderedMapLength > 0 &&
-      (gs.map.length !== this.renderedMapLength || gs.map.width !== this.renderedMapWidth)
+      (gs.map.length !== this.renderedMapLength ||
+        gs.map.width !== this.renderedMapWidth)
     ) {
       this.rebuildPlatform(gs.map.length, gs.map.width);
     }
@@ -641,17 +747,35 @@ class GameScene {
 
       let moveX = 0;
       let moveZ = 0;
-      if (this.lobbyKeys.w) { moveX += fwdX; moveZ += fwdZ; }
-      if (this.lobbyKeys.s) { moveX -= fwdX; moveZ -= fwdZ; }
-      if (this.lobbyKeys.d) { moveX += rightX; moveZ += rightZ; }
-      if (this.lobbyKeys.a) { moveX -= rightX; moveZ -= rightZ; }
+      if (this.lobbyKeys.w) {
+        moveX += fwdX;
+        moveZ += fwdZ;
+      }
+      if (this.lobbyKeys.s) {
+        moveX -= fwdX;
+        moveZ -= fwdZ;
+      }
+      if (this.lobbyKeys.d) {
+        moveX += rightX;
+        moveZ += rightZ;
+      }
+      if (this.lobbyKeys.a) {
+        moveX -= rightX;
+        moveZ -= rightZ;
+      }
 
       const len = Math.hypot(moveX, moveZ);
       if (len > 0) {
         moveX = (moveX / len) * LOBBY_SPEED * dt;
         moveZ = (moveZ / len) * LOBBY_SPEED * dt;
-        this.lobbyPos.x = Math.max(1, Math.min(mapLen - 1, this.lobbyPos.x + moveX));
-        this.lobbyPos.z = Math.max(1, Math.min(mapWid - 1, this.lobbyPos.z + moveZ));
+        this.lobbyPos.x = Math.max(
+          1,
+          Math.min(mapLen - 1, this.lobbyPos.x + moveX),
+        );
+        this.lobbyPos.z = Math.max(
+          1,
+          Math.min(mapWid - 1, this.lobbyPos.z + moveZ),
+        );
       }
 
       // Send position to server (throttled to ~10/sec)
@@ -677,7 +801,7 @@ class GameScene {
         // Face movement direction
         if (len > 0) {
           const moveDeg = (Math.atan2(moveZ, moveX) * 180) / Math.PI;
-          myTracker.currentRotY = -(moveDeg * Math.PI / 180) + Math.PI / 2;
+          myTracker.currentRotY = -((moveDeg * Math.PI) / 180) + Math.PI / 2;
         }
       }
 
@@ -708,16 +832,27 @@ class GameScene {
       // During lobby, current player position is driven by WASD above
       if (phase === "lobby" && isCurrentPlayer) {
         // Interpolation
-        const INTERP_DURATION = 0.04;
         if (tracker.interpT < 1) {
-          tracker.interpT = Math.min(1, tracker.interpT + dt / INTERP_DURATION);
-          const t = tracker.interpT * tracker.interpT * (3 - 2 * tracker.interpT);
-          Vector3.LerpToRef(tracker.interpFrom, tracker.interpTo, t, tracker.root.position);
+          tracker.interpT = Math.min(
+            1,
+            tracker.interpT + dt / LOBBY_INTERP_DURATION,
+          );
+          const t =
+            tracker.interpT * tracker.interpT * (3 - 2 * tracker.interpT);
+          Vector3.LerpToRef(
+            tracker.interpFrom,
+            tracker.interpTo,
+            t,
+            tracker.root.position,
+          );
         } else {
           const blend = 1 - Math.exp(-10 * dt);
-          tracker.root.position.x += (tracker.interpTo.x - tracker.root.position.x) * blend;
-          tracker.root.position.y += (tracker.interpTo.y - tracker.root.position.y) * blend;
-          tracker.root.position.z += (tracker.interpTo.z - tracker.root.position.z) * blend;
+          tracker.root.position.x +=
+            (tracker.interpTo.x - tracker.root.position.x) * blend;
+          tracker.root.position.y +=
+            (tracker.interpTo.y - tracker.root.position.y) * blend;
+          tracker.root.position.z +=
+            (tracker.interpTo.z - tracker.root.position.z) * blend;
         }
         tracker.root.rotation.y = tracker.currentRotY;
         tracker.arrow.setEnabled(false);
@@ -740,17 +875,27 @@ class GameScene {
       }
 
       // Smooth position interpolation
-      const INTERP_DURATION = 0.04;
       if (tracker.interpT < 1) {
-        tracker.interpT = Math.min(1, tracker.interpT + dt / INTERP_DURATION);
+        tracker.interpT = Math.min(
+          1,
+          tracker.interpT + dt / SERVER_INTERP_DURATION,
+        );
         const t = tracker.interpT * tracker.interpT * (3 - 2 * tracker.interpT);
-        Vector3.LerpToRef(tracker.interpFrom, tracker.interpTo, t, tracker.root.position);
+        Vector3.LerpToRef(
+          tracker.interpFrom,
+          tracker.interpTo,
+          t,
+          tracker.root.position,
+        );
       } else {
         // Gently hold at target
         const blend = 1 - Math.exp(-10 * dt);
-        tracker.root.position.x += (tracker.interpTo.x - tracker.root.position.x) * blend;
-        tracker.root.position.y += (tracker.interpTo.y - tracker.root.position.y) * blend;
-        tracker.root.position.z += (tracker.interpTo.z - tracker.root.position.z) * blend;
+        tracker.root.position.x +=
+          (tracker.interpTo.x - tracker.root.position.x) * blend;
+        tracker.root.position.y +=
+          (tracker.interpTo.y - tracker.root.position.y) * blend;
+        tracker.root.position.z +=
+          (tracker.interpTo.z - tracker.root.position.z) * blend;
       }
 
       // Eliminated player transparency
@@ -762,7 +907,9 @@ class GameScene {
             if (clonedMat) {
               clonedMat.alpha = 0.35;
               if ("needDepthPrePass" in clonedMat) {
-                (clonedMat as unknown as Record<string, unknown>).needDepthPrePass = true;
+                (
+                  clonedMat as unknown as Record<string, unknown>
+                ).needDepthPrePass = true;
               }
               m.material = clonedMat;
             }
@@ -773,9 +920,10 @@ class GameScene {
 
       // Rotation: penguin model faces +Z. rotation.y = θ maps +Z to (sin(θ), cos(θ))
       // Physics dir 0° = +X → targetRotY = -rad + π/2
-      const dir = isCurrentPlayer && phase === "countdown"
-        ? store.aimDirection
-        : penguin.direction;
+      const dir =
+        isCurrentPlayer && phase === "countdown"
+          ? store.aimDirection
+          : penguin.direction;
       const rad = (dir * Math.PI) / 180;
       const targetRotY = -rad + Math.PI / 2;
 
@@ -791,13 +939,16 @@ class GameScene {
       if (tracker.isEliminated) {
         tracker.arrow.setEnabled(false);
       } else {
-        const showArrow = (phase === "countdown" || phase === "animating") && penguin.eliminated === 0;
+        const showArrow =
+          (phase === "countdown" || phase === "animating") &&
+          penguin.eliminated === 0;
         tracker.arrow.setEnabled(showArrow);
         if (showArrow) {
           const power = isCurrentPlayer ? store.aimPower : 6;
           const scale = 0.6 + (power / 10) * 1.5;
           tracker.arrow.scaling.z = scale;
-          tracker.arrow.position.y = 2.8 + Math.sin(performance.now() / 333) * 0.1;
+          tracker.arrow.position.y =
+            2.8 + Math.sin(performance.now() / 333) * 0.1;
         }
       }
     }
@@ -805,10 +956,19 @@ class GameScene {
     // Camera follow during gameplay (skip during lobby — handled above)
     if (phase !== "lobby") {
       const player = gs.players[this.playerId];
+      const playerTracker = this.penguins.get(this.playerId);
       if (player && player.eliminated === 0) {
-        const px = player.position.x - mapCenterX;
-        const pz = player.position.z - mapCenterZ;
-        const target = new Vector3(px, 1, pz);
+        const target = playerTracker
+          ? new Vector3(
+              playerTracker.root.position.x,
+              1,
+              playerTracker.root.position.z,
+            )
+          : new Vector3(
+              player.position.x - mapCenterX,
+              1,
+              player.position.z - mapCenterZ,
+            );
 
         const smoothSpeed = phase === "countdown" ? 5 : 3;
         const blend = 1 - Math.exp(-smoothSpeed * dt);
@@ -821,7 +981,7 @@ class GameScene {
           // On transition to countdown, snap camera behind player's initial direction
           if (this.lastPhase !== "countdown") {
             const initDir = store.aimDirection;
-            this.camera.alpha = (initDir * Math.PI / 180) - Math.PI;
+            this.camera.alpha = (initDir * Math.PI) / 180 - Math.PI;
           }
 
           // Derive aim direction from camera orbit angle
@@ -842,7 +1002,9 @@ class GameScene {
               this.lastMoveSendTime = now;
               try {
                 registerMove({ direction: newAimDir, power: store.aimPower });
-              } catch { /* no websocket in test mode */ }
+              } catch {
+                /* no websocket in test mode */
+              }
             }
           }
         }
@@ -871,9 +1033,13 @@ class GameScene {
     }
   }
 
-  private async loadPenguinSingle(id: string, gs: import("@/lib/types").GameState) {
+  private async loadPenguinSingle(
+    id: string,
+    gs: import("@/lib/types").GameState,
+  ) {
     const penguin = gs.players[id];
-    if (!penguin || this.penguins.has(id) || this.pendingPenguinLoads.has(id)) return;
+    if (!penguin || this.penguins.has(id) || this.pendingPenguinLoads.has(id))
+      return;
     this.pendingPenguinLoads.add(id);
 
     const mapCenterX = gs.map.length / 2;
@@ -895,7 +1061,12 @@ class GameScene {
     const templateSet = new Set(templateMeshes);
     for (const orig of templateMeshes) {
       if (!orig.name || orig.name === "__root__") continue;
-      if (orig.parent && orig.parent.name !== "__root__" && templateSet.has(orig.parent as AbstractMesh)) continue;
+      if (
+        orig.parent &&
+        orig.parent.name !== "__root__" &&
+        templateSet.has(orig.parent as AbstractMesh)
+      )
+        continue;
       const clone = (orig as Mesh).clone(`${id}_${orig.name}`, root);
       if (!clone) continue;
       clone.setEnabled(true);
@@ -936,8 +1107,10 @@ class GameScene {
   }
   dispose() {
     this.disposed = true;
-    if (this.lobbyKeyHandler) window.removeEventListener("keydown", this.lobbyKeyHandler);
-    if (this.lobbyKeyUpHandler) window.removeEventListener("keyup", this.lobbyKeyUpHandler);
+    if (this.lobbyKeyHandler)
+      window.removeEventListener("keydown", this.lobbyKeyHandler);
+    if (this.lobbyKeyUpHandler)
+      window.removeEventListener("keyup", this.lobbyKeyUpHandler);
     this.engine.stopRenderLoop();
     this.scene.dispose();
     this.engine.dispose();
@@ -956,9 +1129,11 @@ export default function GameArena({ playerId }: GameArenaProps) {
   const webglAvailable = useWebGLAvailable();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sceneRef = useRef<GameScene | null>(null);
+  const [isSceneReady, setIsSceneReady] = useState(false);
 
   // Create scene when gameState becomes available; guard prevents re-creation
   useEffect(() => {
+    let cancelled = false;
     const canvas = canvasRef.current;
     if (!canvas || sceneRef.current) return;
 
@@ -967,7 +1142,24 @@ export default function GameArena({ playerId }: GameArenaProps) {
 
     const scene = new GameScene(canvas, playerId);
     sceneRef.current = scene;
-    scene.init().catch(console.error);
+    setIsSceneReady(false);
+    scene
+      .init()
+      .then(() => {
+        if (!cancelled) {
+          setIsSceneReady(true);
+        }
+      })
+      .catch((err) => {
+        console.error(err);
+        if (!cancelled) {
+          setIsSceneReady(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [playerId, gameState]);
 
   // Dispose scene only on unmount
@@ -985,7 +1177,13 @@ export default function GameArena({ playerId }: GameArenaProps) {
   if (webglAvailable === false) {
     return (
       <div
-        style={{ position: "absolute", top: 0, left: 0, width: "100vw", height: "100vh" }}
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100vw",
+          height: "100vh",
+        }}
         className="flex items-center justify-center bg-[#0a0a0f]"
       >
         <div className="text-center max-w-md px-6">
@@ -1005,7 +1203,13 @@ export default function GameArena({ playerId }: GameArenaProps) {
   if (webglAvailable === null) {
     return (
       <div
-        style={{ position: "absolute", top: 0, left: 0, width: "100vw", height: "100vh" }}
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100vw",
+          height: "100vh",
+        }}
         className="flex items-center justify-center bg-[#0a0a0f]"
       >
         <div className="text-white/40 text-sm">Initializing 3D arena...</div>
@@ -1014,13 +1218,38 @@ export default function GameArena({ playerId }: GameArenaProps) {
   }
 
   return (
-    <div style={{ position: "absolute", top: 0, left: 0, width: "100vw", height: "100vh" }}>
+    <div
+      style={{
+        position: "absolute",
+        top: 0,
+        left: 0,
+        width: "100vw",
+        height: "100vh",
+      }}
+    >
       <CanvasErrorBoundary>
         <canvas
           ref={canvasRef}
-          style={{ width: "100%", height: "100%", display: "block", touchAction: "none" }}
+          style={{
+            width: "100%",
+            height: "100%",
+            display: "block",
+            touchAction: "none",
+          }}
         />
       </CanvasErrorBoundary>
+      {!isSceneReady && (
+        <div className="absolute inset-0 flex items-center justify-center bg-[#0a0a0f]">
+          <div className="text-center px-6">
+            <p className="text-white/70 text-sm font-medium">
+              Loading arena assets...
+            </p>
+            <p className="mt-2 text-white/35 text-xs">
+              Syncing map, environment, and penguins.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -15,6 +15,7 @@ type GameState struct {
 	WaitTime        time.Duration                   `json:"wait_time"` // Time to wait between rounds to allow players to make moves
 	HostId          string                          `json:"host_id"`
 	Started         bool                            `json:"started"`
+	AcceptingMoves  bool                            `json:"accepting_moves"`
 	roundEliminated bool
 	LastHitBy       map[string]string `json:"-"` // tracks last collision partner per player (ephemeral)
 }

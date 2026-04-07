@@ -74,6 +74,15 @@ func WSHandler(c *websocket.Conn) {
 		}
 	}()
 	playerId, playerSecret, gameId := middlewares.GetPlayerIdWS(c), middlewares.GetPlayerSecretWS(c), c.Params("gameId")
+	done := make(chan struct{})
+	var closeOnce sync.Once
+	closeConn := func() {
+		closeOnce.Do(func() {
+			close(done)
+			_ = c.Close()
+		})
+	}
+	defer closeConn()
 
 	var writeMu sync.Mutex
 	writeJSON := func(v any) error {
@@ -105,8 +114,37 @@ func WSHandler(c *websocket.Conn) {
 	sub := game.Subscribe()
 	defer sub.Close()
 
-	done := make(chan struct{})
-	defer close(done)
+	outbound := make(chan outgoing, 32)
+	positionUpdates := make(chan outgoing, 1)
+
+	queueOutgoing := func(msg outgoing) bool {
+		select {
+		case <-done:
+			return false
+		default:
+		}
+
+		if msg.Event == repository.PlayersPositionUpdate {
+			select {
+			case <-positionUpdates:
+			default:
+			}
+
+			select {
+			case positionUpdates <- msg:
+				return true
+			case <-done:
+				return false
+			}
+		}
+
+		select {
+		case outbound <- msg:
+			return true
+		case <-done:
+			return false
+		}
+	}
 
 	go func() {
 		ticker := time.NewTicker(pingInterval)
@@ -128,7 +166,7 @@ func WSHandler(c *websocket.Conn) {
 					log.Printf("[%s] ping failed (attempt %d/%d): %v", gameId, pingFailures, maxPingRetries, err)
 					if pingFailures >= maxPingRetries {
 						log.Printf("[%s] max ping failures reached, closing connection", gameId)
-						c.Close()
+						closeConn()
 						return
 					}
 					// Continue and try again on next tick
@@ -141,10 +179,51 @@ func WSHandler(c *websocket.Conn) {
 	}()
 
 	go func() {
+		writeOutgoing := func(msg outgoing) bool {
+			if err := writeJSON(msg); err != nil {
+				closeConn()
+				return false
+			}
+			return true
+		}
+
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+
+			select {
+			case msg := <-outbound:
+				if !writeOutgoing(msg) {
+					return
+				}
+				continue
+			default:
+			}
+
+			select {
+			case <-done:
+				return
+			case msg := <-outbound:
+				if !writeOutgoing(msg) {
+					return
+				}
+			case msg := <-positionUpdates:
+				if !writeOutgoing(msg) {
+					return
+				}
+			}
+		}
+	}()
+
+	go func() {
 		for {
 			event, err := sub.ReceiveEvent()
 			if err != nil {
-				return // Close the connection
+				closeConn()
+				return
 			}
 
 			var data any
@@ -154,10 +233,10 @@ func WSHandler(c *websocket.Conn) {
 				data = event.Data
 			}
 
-			if err := writeJSON(outgoing{
+			if !queueOutgoing(outgoing{
 				Event: event.Type,
 				Data:  data,
-			}); err != nil {
+			}) {
 				return
 			}
 		}
@@ -170,7 +249,7 @@ func WSHandler(c *websocket.Conn) {
 		_, msgBytes, err := c.ReadMessage()
 		if err != nil {
 			log.Printf("[%s] connection closed: %v", gameId, err)
-			c.Close()
+			closeConn()
 			return
 		}
 		c.SetReadDeadline(time.Now().Add(pongWait))
@@ -223,6 +302,21 @@ func WSHandler(c *websocket.Conn) {
 				})
 				continue
 			}
+			if existing, ok := game.GameState.Players[player.Id]; ok {
+				existing.PlayerSecret = playerSecret
+				if player.Skin != "" && !game.GameState.Started {
+					existing.Skin = player.Skin
+				}
+				game.GameState.Players[player.Id] = existing
+				if _, err := game.UpdateGame(); err != nil {
+					writeJSON(outgoing{
+						Event: repository.ErrorEvent,
+						Error: err.Error(),
+					})
+				}
+				continue
+			}
+
 			player.PlayerSecret = playerSecret
 			player.Mass = physics.NormalMass
 			if strings.HasPrefix(player.Id, "anonymous") {
@@ -267,6 +361,13 @@ func WSHandler(c *websocket.Conn) {
 				})
 				continue
 			}
+			player := game.GameState.Players[playerId]
+			if player.Eliminated > 0 {
+				continue
+			}
+			if game.GameState.Started && !game.GameState.AcceptingMoves {
+				continue
+			}
 			done, err := game.RegisterPlayerMove(playerId, playerMove)
 			if err != nil {
 				writeJSON(outgoing{
@@ -291,6 +392,9 @@ func WSHandler(c *websocket.Conn) {
 			}
 			player, ok := game.GameState.Players[playerId]
 			if !ok {
+				continue
+			}
+			if game.GameState.Started && player.Eliminated == 0 {
 				continue
 			}
 			player.Position = pos
@@ -468,6 +572,13 @@ func startGameLoop(gameId string) {
 				return
 			}
 
+			if !game.GameState.AcceptingMoves {
+				game.GameState.AcceptingMoves = true
+				if _, err := game.UpdateGame(); err != nil {
+					return
+				}
+			}
+
 			round := game.GameState.CurrentRound
 			emitCountdown(game, round, game.GameState.WaitTime)
 
@@ -476,13 +587,25 @@ func startGameLoop(gameId string) {
 				return
 			}
 
+			if game.GameState.AcceptingMoves {
+				game.GameState.AcceptingMoves = false
+				if _, err := game.UpdateGame(); err != nil {
+					return
+				}
+			}
+
 			round = game.GameState.CurrentRound
 			movesSnapshot := copyMoves(game.GameState.CurrentMoves)
 
-			// Stream position updates during simulation at ~20fps
+			_ = game.PublishEvent(repository.PlayerMadeMove, roundMovesPayload{
+				Round: round,
+				Moves: movesSnapshot,
+			}, nil)
+
+			// Stream authoritative positions during simulation at ~20fps.
 			// SimulateTick is pure math (no real-time delay), so we add a small
 			// sleep to spread updates over time for smooth frontend animation.
-			const posPublishInterval = 30 * time.Millisecond
+			const posPublishInterval = 50 * time.Millisecond
 			game.GameState.PlayMovesWithCallback(func(players map[string]entities.Penguin) {
 				_ = game.PublishEvent(repository.PlayersPositionUpdate, nil, game.GameState)
 				time.Sleep(posPublishInterval)
@@ -492,11 +615,6 @@ func startGameLoop(gameId string) {
 				return
 			}
 
-			_ = game.PublishEvent(repository.PlayerMadeMove, roundMovesPayload{
-				Round: round,
-				Moves: movesSnapshot,
-			}, nil)
-
 			for _, player := range eliminatedPlayers(game.GameState, round) {
 				eliminatedBy := ""
 				if game.GameState.LastHitBy != nil {
@@ -505,12 +623,12 @@ func startGameLoop(gameId string) {
 					}
 				}
 				_ = game.PublishEvent(repository.PlayerEliminated, struct {
-					PlayerId    string `json:"player_id"`
-					Round       int    `json:"round"`
+					PlayerId     string `json:"player_id"`
+					Round        int    `json:"round"`
 					EliminatedBy string `json:"eliminated_by,omitempty"`
 				}{
-					PlayerId:    player.Id,
-					Round:       player.Eliminated,
+					PlayerId:     player.Id,
+					Round:        player.Eliminated,
 					EliminatedBy: eliminatedBy,
 				}, nil)
 			}
