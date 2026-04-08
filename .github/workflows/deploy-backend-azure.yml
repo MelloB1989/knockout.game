@@ -12,8 +12,6 @@ concurrency:
 env:
   IMAGE_NAME: knockout-server
   WORKING_DIR: services/server
-  BUILD_CACHE_DIR: /mnt/buildx-cache/primary
-  BUILD_CACHE_DIR_NEW: /mnt/buildx-cache/next
 
 jobs:
   build-and-deploy:
@@ -153,10 +151,6 @@ jobs:
           kubelogin convert-kubeconfig -l azurecli
           kubectl cluster-info
 
-      - name: Prepare Buildx cache
-        run: |
-          mkdir -p "${{ env.BUILD_CACHE_DIR }}" "${{ env.BUILD_CACHE_DIR_NEW }}"
-
       - name: Build and Push Docker image
         uses: docker/build-push-action@v6
         with:
@@ -169,13 +163,6 @@ jobs:
             ${{ steps.azure.outputs.acr_login_server }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.sha_short }}
           build-args: |
             GO_VERSION=1.24.4
-          cache-from: type=local,src=${{ env.BUILD_CACHE_DIR }}
-          cache-to: type=local,dest=${{ env.BUILD_CACHE_DIR_NEW }},mode=max
-
-      - name: Rotate Buildx cache
-        run: |
-          rm -rf "${{ env.BUILD_CACHE_DIR }}"
-          mv "${{ env.BUILD_CACHE_DIR_NEW }}" "${{ env.BUILD_CACHE_DIR }}"
 
       - name: Run Database Migrations
         run: |
