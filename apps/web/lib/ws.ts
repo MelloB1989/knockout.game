@@ -17,6 +17,113 @@ let pendingRegistration: Partial<Penguin> | null = null;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
 let intentionalClose = false;
+let positionApplyTimer: ReturnType<typeof setTimeout> | null = null;
+let positionQueue: GameState[] = [];
+let playbackClockOffsetMs: number | null = null;
+let lastAppliedServerFrame = -1;
+
+const POSITION_PLAYBACK_DELAY_MS = 75;
+const MAX_BUFFERED_POSITION_STATES = 12;
+
+function stopPositionApply() {
+  if (positionApplyTimer) {
+    clearTimeout(positionApplyTimer);
+    positionApplyTimer = null;
+  }
+}
+
+function resetPositionPlayback() {
+  stopPositionApply();
+  positionQueue = [];
+  playbackClockOffsetMs = null;
+  lastAppliedServerFrame = -1;
+}
+
+function hasServerPlaybackMeta(gs: GameState) {
+  return Number.isFinite(gs.server_frame) && Number.isFinite(gs.server_time_ms);
+}
+
+function schedulePositionPlayback() {
+  stopPositionApply();
+
+  if (positionQueue.length === 0) return;
+
+  while (positionQueue.length > 0) {
+    const next = positionQueue[0];
+    if (!next) break;
+    const now = Date.now();
+
+    if (!hasServerPlaybackMeta(next)) {
+      positionQueue.shift();
+      useGameStore.getState().handlePositionUpdate(next);
+      continue;
+    }
+
+    const clockOffset = playbackClockOffsetMs ?? 0;
+    const dueAt =
+      next.server_time_ms + clockOffset + POSITION_PLAYBACK_DELAY_MS;
+    const waitMs = dueAt - now;
+
+    if (waitMs > 0) {
+      positionApplyTimer = setTimeout(() => {
+        positionApplyTimer = null;
+        schedulePositionPlayback();
+      }, waitMs);
+      return;
+    }
+
+    positionQueue.shift();
+    if (next.server_frame <= lastAppliedServerFrame) {
+      continue;
+    }
+
+    lastAppliedServerFrame = next.server_frame;
+    useGameStore.getState().handlePositionUpdate(next);
+  }
+}
+
+function enqueuePositionUpdate(gs: GameState) {
+  if (!gs.started || gs.accepting_moves) {
+    resetPositionPlayback();
+    useGameStore.getState().handlePositionUpdate(gs);
+    return;
+  }
+
+  if (hasServerPlaybackMeta(gs)) {
+    const observedOffset = Date.now() - gs.server_time_ms;
+    playbackClockOffsetMs =
+      playbackClockOffsetMs === null
+        ? observedOffset
+        : Math.min(playbackClockOffsetMs, observedOffset);
+
+    const existingIndex = positionQueue.findIndex(
+      (entry) => entry.server_frame >= gs.server_frame,
+    );
+    const existingState =
+      existingIndex >= 0 ? positionQueue[existingIndex] : undefined;
+
+    if (existingIndex === -1) {
+      positionQueue.push(gs);
+    } else if (existingState?.server_frame === gs.server_frame) {
+      positionQueue[existingIndex] = gs;
+    } else {
+      positionQueue.splice(existingIndex, 0, gs);
+    }
+
+    if (positionQueue.length > MAX_BUFFERED_POSITION_STATES) {
+      positionQueue = positionQueue.slice(-MAX_BUFFERED_POSITION_STATES);
+    }
+
+    schedulePositionPlayback();
+    return;
+  }
+
+  useGameStore.getState().handlePositionUpdate(gs);
+}
+
+function flushRealtimeState() {
+  resetPositionPlayback();
+}
 
 function getWsBase() {
   const base = API_BASE.replace(/^http/, "ws");
@@ -24,6 +131,8 @@ function getWsBase() {
 }
 
 export function connectToGame(gameId: string, token: string) {
+  resetPositionPlayback();
+
   // Close any existing connection cleanly
   if (ws) {
     ws.onclose = null; // prevent reconnect loop from old socket
@@ -66,6 +175,7 @@ export function connectToGame(gameId: string, token: string) {
   };
 
   ws.onclose = () => {
+    resetPositionPlayback();
     const phase = useGameStore.getState().phase;
     if (
       !intentionalClose &&
@@ -90,6 +200,7 @@ export function disconnectFromGame() {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  resetPositionPlayback();
   if (ws) {
     ws.onclose = null;
     ws.close();
@@ -118,7 +229,7 @@ export function registerMove(move: PenguinMove) {
   sendEvent("register_move", move);
 }
 
-export function sendPosition(pos: { x: number; z: number }) {
+export function sendPosition(pos: { x: number; z: number; direction?: number }) {
   sendEvent("update_position", pos);
 }
 
@@ -135,6 +246,7 @@ function handleServerEvent(msg: OutgoingMessage) {
 
   switch (msg.event) {
     case "game_state": {
+      flushRealtimeState();
       const gs = msg.data as GameState;
       store.setGameState(gs);
       break;
@@ -145,11 +257,13 @@ function handleServerEvent(msg: OutgoingMessage) {
       break;
     }
     case "round_start_countdown": {
+      flushRealtimeState();
       const payload = msg.data as CountdownPayload;
       store.handleCountdown(payload);
       break;
     }
     case "player_made_move": {
+      flushRealtimeState();
       const payload = msg.data as RoundMovesPayload;
       store.handleRoundMoves(payload);
       break;
@@ -160,6 +274,7 @@ function handleServerEvent(msg: OutgoingMessage) {
       break;
     }
     case "game_ended": {
+      flushRealtimeState();
       const payload = msg.data as GameEndedPayload;
       const gs =
         (msg as { data?: GameEndedPayload; game_state?: GameState })
@@ -174,7 +289,7 @@ function handleServerEvent(msg: OutgoingMessage) {
     case "players_position_update": {
       const gs = msg.data as GameState;
       if (gs) {
-        store.handlePositionUpdate(gs);
+        enqueuePositionUpdate(gs);
       }
       break;
     }

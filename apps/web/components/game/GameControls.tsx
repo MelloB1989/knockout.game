@@ -1,11 +1,17 @@
 "use client";
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef, type PointerEvent } from "react";
 import { useGameStore } from "@/lib/game-store";
 import { registerMove } from "@/lib/ws";
 
 const POWER_LEVELS = [2, 4, 6, 8, 10];
 const MAX_SLOTS = 10;
+const TURN_SPEED_DEG_PER_SEC = 160;
+const AIM_BROADCAST_INTERVAL_MS = 50;
+
+function normalizeDegrees(value: number) {
+  return ((value % 360) + 360) % 360;
+}
 
 /** Send current aim to server */
 function sendCurrentAim() {
@@ -16,51 +22,155 @@ function sendCurrentAim() {
 export default function GameControls() {
   const phase = useGameStore((s) => s.phase);
   const countdown = useGameStore((s) => s.countdown);
-  const moveSubmitted = useGameStore((s) => s.moveSubmitted);
   const currentRound = useGameStore((s) => s.currentRound);
   const aimPower = useGameStore((s) => s.aimPower);
 
   const filledSlots = aimPower;
+  const turnDirRef = useRef<-1 | 0 | 1>(0);
+  const leftPressedRef = useRef(false);
+  const rightPressedRef = useRef(false);
+  const turnFrameRef = useRef<number | null>(null);
+  const lastTurnAtRef = useRef<number | null>(null);
+  const lastBroadcastAtRef = useRef(0);
+
+  const stopTurning = useCallback(() => {
+    turnDirRef.current = 0;
+    leftPressedRef.current = false;
+    rightPressedRef.current = false;
+    lastTurnAtRef.current = null;
+    if (turnFrameRef.current !== null) {
+      cancelAnimationFrame(turnFrameRef.current);
+      turnFrameRef.current = null;
+    }
+  }, []);
+
+  const turnLoop = useCallback((timestamp: number) => {
+    if (useGameStore.getState().phase !== "countdown") {
+      stopTurning();
+      return;
+    }
+
+    const turnDir = turnDirRef.current;
+    const lastTurnAt = lastTurnAtRef.current ?? timestamp;
+    const dt = Math.max(0, (timestamp - lastTurnAt) / 1000);
+    lastTurnAtRef.current = timestamp;
+
+    if (turnDir !== 0 && dt > 0) {
+      const store = useGameStore.getState();
+      const nextAimDirection = normalizeDegrees(
+        store.aimDirection + turnDir * TURN_SPEED_DEG_PER_SEC * dt,
+      );
+      store.setAimDirection(nextAimDirection);
+
+      if (timestamp - lastBroadcastAtRef.current >= AIM_BROADCAST_INTERVAL_MS) {
+        lastBroadcastAtRef.current = timestamp;
+        registerMove({
+          direction: nextAimDirection,
+          power: store.aimPower,
+        });
+      }
+    }
+
+    turnFrameRef.current = requestAnimationFrame(turnLoop);
+  }, [stopTurning]);
+
+  const syncTurnDirection = useCallback(() => {
+    const nextDir = leftPressedRef.current === rightPressedRef.current
+      ? 0
+      : leftPressedRef.current
+        ? -1
+        : 1;
+
+    if (nextDir === 0) {
+      turnDirRef.current = 0;
+      lastTurnAtRef.current = null;
+      return;
+    }
+
+    if (turnDirRef.current !== nextDir) {
+      turnDirRef.current = nextDir;
+      lastTurnAtRef.current = null;
+    }
+
+    if (turnFrameRef.current === null) {
+      turnFrameRef.current = requestAnimationFrame(turnLoop);
+    }
+  }, [turnLoop]);
+
+  const setTurnPressed = useCallback((dir: -1 | 1, pressed: boolean) => {
+    if (dir < 0) {
+      leftPressedRef.current = pressed;
+    } else {
+      rightPressedRef.current = pressed;
+    }
+    syncTurnDirection();
+  }, [syncTurnDirection]);
 
   /* ── Power cycling ── */
   const decreasePower = useCallback(() => {
-    if (moveSubmitted) return;
     const idx = POWER_LEVELS.indexOf(useGameStore.getState().aimPower);
     if (idx > 0) {
       useGameStore.getState().setAimPower(POWER_LEVELS[idx - 1]!);
       sendCurrentAim();
     }
-  }, [moveSubmitted]);
+  }, []);
 
   const increasePower = useCallback(() => {
-    if (moveSubmitted) return;
     const idx = POWER_LEVELS.indexOf(useGameStore.getState().aimPower);
     if (idx < POWER_LEVELS.length - 1) {
       useGameStore.getState().setAimPower(POWER_LEVELS[idx + 1]!);
       sendCurrentAim();
     }
-  }, [moveSubmitted]);
+  }, []);
 
   /* ── Send initial aim when countdown starts ── */
   useEffect(() => {
-    if (phase === "countdown" && !moveSubmitted) {
-      const t = setTimeout(() => sendCurrentAim(), 200);
-      return () => clearTimeout(t);
+    if (phase === "countdown") {
+      lastBroadcastAtRef.current = 0;
+      sendCurrentAim();
+      return () => stopTurning();
     }
-  }, [phase, currentRound, moveSubmitted]);
+    stopTurning();
+  }, [phase, currentRound, stopTurning]);
 
-  /* ── Keyboard listener for Q/E power ── */
+  /* ── Keyboard listener for turning + Q/E power ── */
   useEffect(() => {
     if (phase !== "countdown") return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "a" || e.key === "A" || e.key === "ArrowLeft") {
+        e.preventDefault();
+        setTurnPressed(-1, true);
+      }
+      if (e.key === "d" || e.key === "D" || e.key === "ArrowRight") {
+        e.preventDefault();
+        setTurnPressed(1, true);
+      }
       if (e.key === "q" || e.key === "Q") decreasePower();
       if (e.key === "e" || e.key === "E") increasePower();
     };
 
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === "a" || e.key === "A" || e.key === "ArrowLeft") {
+        setTurnPressed(-1, false);
+      }
+      if (e.key === "d" || e.key === "D" || e.key === "ArrowRight") {
+        setTurnPressed(1, false);
+      }
+    };
+
+    const handleBlur = () => stopTurning();
+
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [phase, decreasePower, increasePower]);
+    window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("blur", handleBlur);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("blur", handleBlur);
+      stopTurning();
+    };
+  }, [phase, decreasePower, increasePower, setTurnPressed, stopTurning]);
 
   if (phase === "lobby") {
     return (
@@ -75,6 +185,16 @@ export default function GameControls() {
   }
 
   if (phase !== "countdown") return null;
+
+  const turnButtonProps = (dir: -1 | 1) => ({
+    onPointerDown: (e: PointerEvent<HTMLButtonElement>) => {
+      e.preventDefault();
+      setTurnPressed(dir, true);
+    },
+    onPointerUp: () => setTurnPressed(dir, false),
+    onPointerLeave: () => setTurnPressed(dir, false),
+    onPointerCancel: () => setTurnPressed(dir, false),
+  });
 
   const isUrgent = countdown <= 3;
 
@@ -115,16 +235,37 @@ export default function GameControls() {
         </div>
       </div>
 
-      {/* ── Center: Drag hint ── */}
-      <div className="pointer-events-none flex items-center justify-center">
-        {!moveSubmitted && (
-          <div className="text-[var(--text-dim)] text-sm select-none flex items-center gap-2 font-[family-name:var(--font-fredoka)]">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M5 12h14M5 12l4-4M5 12l4 4M19 12l-4-4M19 12l-4 4" />
-            </svg>
-            Drag to aim &middot; Scroll to zoom
-          </div>
-        )}
+      {/* ── Center: Turn controls ── */}
+      <div className="pointer-events-auto flex flex-col items-center justify-center gap-3 px-4">
+        <div className="text-[var(--text-dim)] text-sm select-none flex items-center gap-2 text-center font-[family-name:var(--font-fredoka)]">
+          Hold A / D or Arrow keys to turn your penguin.
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            {...turnButtonProps(-1)}
+            className="rounded-xl px-5 py-3 text-sm font-semibold font-[family-name:var(--font-fredoka)]"
+            style={{
+              background: "linear-gradient(180deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 100%)",
+              border: "2px solid var(--border-warm)",
+              color: "var(--text-warm)",
+              boxShadow: "0 2px 4px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.05)",
+            }}
+          >
+            Turn Left
+          </button>
+          <button
+            {...turnButtonProps(1)}
+            className="rounded-xl px-5 py-3 text-sm font-semibold font-[family-name:var(--font-fredoka)]"
+            style={{
+              background: "linear-gradient(180deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 100%)",
+              border: "2px solid var(--border-warm)",
+              color: "var(--text-warm)",
+              boxShadow: "0 2px 4px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.05)",
+            }}
+          >
+            Turn Right
+          </button>
+        </div>
       </div>
 
       {/* ── Bottom: Power bar ── */}
@@ -156,7 +297,6 @@ export default function GameControls() {
             {/* Q Button */}
             <button
               onClick={(e) => { e.stopPropagation(); decreasePower(); }}
-              disabled={moveSubmitted}
               className="flex flex-col items-center gap-0.5 shrink-0 group"
             >
               <div
@@ -188,7 +328,6 @@ export default function GameControls() {
                       useGameStore.getState().setAimPower(level);
                       sendCurrentAim();
                     }}
-                    disabled={moveSubmitted}
                     className="flex-1 h-10 rounded-lg transition-all"
                     style={
                       isFilled
@@ -210,7 +349,6 @@ export default function GameControls() {
             {/* E Button */}
             <button
               onClick={(e) => { e.stopPropagation(); increasePower(); }}
-              disabled={moveSubmitted}
               className="flex flex-col items-center gap-0.5 shrink-0 group"
             >
               <div

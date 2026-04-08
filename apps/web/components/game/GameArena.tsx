@@ -109,7 +109,15 @@ interface PenguinTracker {
 }
 
 const LOBBY_INTERP_DURATION = 0.04;
-const SERVER_INTERP_DURATION = 0.08;
+const SERVER_INTERP_DURATION = 0.05;
+const FOLLOW_CAMERA_BETA = 1.08;
+const FOLLOW_CAMERA_RADIUS = 13;
+const COUNTDOWN_CAMERA_RADIUS = 11.5;
+const COUNTDOWN_MOUSE_TURN_DEG_PER_PX = 0.35;
+
+function normalizeDegrees(value: number) {
+  return ((value % 360) + 360) % 360;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Build a flat 2D arrow mesh (lies in XZ plane, points +Z)          */
@@ -203,8 +211,16 @@ class GameScene {
   private disposed = false;
   private lobbyTime = 0;
   private lastPhase: string = "";
-  private lastMoveSendTime: number = 0;
   private lastPosSendTime: number = 0;
+  private cameraControlsAttached = true;
+  private lastAimBroadcastTime: number = 0;
+  private countdownPointerActive = false;
+  private lastCountdownPointerX: number | null = null;
+  private countdownPointerDownHandler: ((e: PointerEvent) => void) | null =
+    null;
+  private countdownPointerMoveHandler: ((e: PointerEvent) => void) | null =
+    null;
+  private countdownPointerUpHandler: ((e: PointerEvent) => void) | null = null;
 
   // Lobby WASD state
   private lobbyKeys = { w: false, a: false, s: false, d: false };
@@ -262,6 +278,46 @@ class GameScene {
     this.camera.keysDown = [];
     this.camera.keysLeft = [];
     this.camera.keysRight = [];
+
+    this.countdownPointerDownHandler = (e: PointerEvent) => {
+      if (useGameStore.getState().phase !== "countdown") return;
+      this.countdownPointerActive = true;
+      this.lastCountdownPointerX = e.clientX;
+    };
+    this.countdownPointerMoveHandler = (e: PointerEvent) => {
+      if (!this.countdownPointerActive) return;
+      const lastX = this.lastCountdownPointerX ?? e.clientX;
+      const dx = e.clientX - lastX;
+      this.lastCountdownPointerX = e.clientX;
+      if (Math.abs(dx) < 0.1) return;
+
+      const store = useGameStore.getState();
+      const nextAimDirection = normalizeDegrees(
+        store.aimDirection + dx*COUNTDOWN_MOUSE_TURN_DEG_PER_PX,
+      );
+      store.setAimDirection(nextAimDirection);
+
+      const now = Date.now();
+      if (now - this.lastAimBroadcastTime >= 33) {
+        this.lastAimBroadcastTime = now;
+        try {
+          registerMove({
+            direction: nextAimDirection,
+            power: store.aimPower,
+          });
+        } catch {
+          /* no websocket in test mode */
+        }
+      }
+    };
+    this.countdownPointerUpHandler = () => {
+      this.countdownPointerActive = false;
+      this.lastCountdownPointerX = null;
+    };
+    canvas.addEventListener("pointerdown", this.countdownPointerDownHandler);
+    canvas.addEventListener("pointermove", this.countdownPointerMoveHandler);
+    window.addEventListener("pointerup", this.countdownPointerUpHandler);
+    window.addEventListener("pointercancel", this.countdownPointerUpHandler);
 
     // Lighting — neutral white to preserve GLB material colors
     const hemi = new HemisphericLight("hemi", new Vector3(0, 1, 0), this.scene);
@@ -345,6 +401,16 @@ class GameScene {
     window.addEventListener("resize", onResize);
     this.scene.onDisposeObservable.add(() => {
       window.removeEventListener("resize", onResize);
+      if (this.countdownPointerDownHandler) {
+        canvas.removeEventListener("pointerdown", this.countdownPointerDownHandler);
+      }
+      if (this.countdownPointerMoveHandler) {
+        canvas.removeEventListener("pointermove", this.countdownPointerMoveHandler);
+      }
+      if (this.countdownPointerUpHandler) {
+        window.removeEventListener("pointerup", this.countdownPointerUpHandler);
+        window.removeEventListener("pointercancel", this.countdownPointerUpHandler);
+      }
     });
   }
 
@@ -706,6 +772,20 @@ class GameScene {
     const mapCenterX = gs.map.length / 2;
     const mapCenterZ = gs.map.width / 2;
 
+    const wantsCameraControls =
+      phase === "lobby" || phase === "animating" || phase === "playing";
+    if (wantsCameraControls !== this.cameraControlsAttached) {
+      const canvas = this.engine.getRenderingCanvas();
+      if (canvas) {
+        if (wantsCameraControls) {
+          this.camera.attachControl(canvas, true);
+        } else {
+          this.camera.detachControl();
+        }
+      }
+      this.cameraControlsAttached = wantsCameraControls;
+    }
+
     // Detect map shrink → rebuild platform
     if (
       this.renderedMapLength > 0 &&
@@ -733,6 +813,7 @@ class GameScene {
           this.lobbyPos = { x: gs.map.length / 2, z: gs.map.width / 2 };
         }
       }
+      const myPenguin = gs.players[this.playerId];
 
       const LOBBY_SPEED = 8;
       const mapLen = gs.map.length;
@@ -778,38 +859,38 @@ class GameScene {
         );
       }
 
-      // Send position to server (throttled to ~10/sec)
-      const now = performance.now();
-      if (len > 0 && now - this.lastPosSendTime > 100) {
-        this.lastPosSendTime = now;
-        sendPosition({ x: this.lobbyPos.x, z: this.lobbyPos.z });
+      let moveDirection = myPenguin?.direction ?? 0;
+      if (len > 0) {
+        moveDirection =
+          (((Math.atan2(moveZ, moveX) * 180) / Math.PI) + 360) % 360;
       }
 
-      // Update current player's tracker
-      const myTracker = this.penguins.get(this.playerId);
-      if (myTracker) {
-        const wx = this.lobbyPos.x - mapCenterX;
-        const wz = this.lobbyPos.z - mapCenterZ;
-        const newPos = new Vector3(wx, 0.5, wz);
-        if (!newPos.equalsWithEpsilon(myTracker.interpTo, 0.01)) {
-          myTracker.interpFrom.copyFrom(myTracker.root.position);
-          myTracker.interpTo.copyFrom(newPos);
-          myTracker.interpT = 0;
-          myTracker.lastX = wx;
-          myTracker.lastZ = wz;
+      if (myPenguin) {
+        const authDx = myPenguin.position.x - this.lobbyPos.x;
+        const authDz = myPenguin.position.z - this.lobbyPos.z;
+        if (len === 0 || Math.hypot(authDx, authDz) > 1.5) {
+          this.lobbyPos.x = myPenguin.position.x;
+          this.lobbyPos.z = myPenguin.position.z;
         }
-        // Face movement direction
-        if (len > 0) {
-          const moveDeg = (Math.atan2(moveZ, moveX) * 180) / Math.PI;
-          myTracker.currentRotY = -((moveDeg * Math.PI) / 180) + Math.PI / 2;
-        }
+      }
+
+      // Send position to server (throttled to ~30/sec)
+      const now = performance.now();
+      if (len > 0 && now - this.lastPosSendTime > 33) {
+        this.lastPosSendTime = now;
+        sendPosition({
+          x: this.lobbyPos.x,
+          z: this.lobbyPos.z,
+          direction: moveDirection,
+        });
       }
 
       // Camera follows player
+      const camTargetPlayer = myPenguin ?? gs.players[this.playerId];
       const camTarget = new Vector3(
-        this.lobbyPos.x - mapCenterX,
+        (camTargetPlayer?.position.x ?? this.lobbyPos.x) - mapCenterX,
         1.5,
-        this.lobbyPos.z - mapCenterZ,
+        (camTargetPlayer?.position.z ?? this.lobbyPos.z) - mapCenterZ,
       );
       const blend = 1 - Math.exp(-5 * dt);
       this.camera.target.x += (camTarget.x - this.camera.target.x) * blend;
@@ -829,43 +910,24 @@ class GameScene {
 
       const isCurrentPlayer = id === this.playerId;
 
-      // During lobby, current player position is driven by WASD above
-      if (phase === "lobby" && isCurrentPlayer) {
-        // Interpolation
-        if (tracker.interpT < 1) {
-          tracker.interpT = Math.min(
-            1,
-            tracker.interpT + dt / LOBBY_INTERP_DURATION,
-          );
-          const t =
-            tracker.interpT * tracker.interpT * (3 - 2 * tracker.interpT);
-          Vector3.LerpToRef(
-            tracker.interpFrom,
-            tracker.interpTo,
-            t,
-            tracker.root.position,
-          );
-        } else {
-          const blend = 1 - Math.exp(-10 * dt);
-          tracker.root.position.x +=
-            (tracker.interpTo.x - tracker.root.position.x) * blend;
-          tracker.root.position.y +=
-            (tracker.interpTo.y - tracker.root.position.y) * blend;
-          tracker.root.position.z +=
-            (tracker.interpTo.z - tracker.root.position.z) * blend;
-        }
-        tracker.root.rotation.y = tracker.currentRotY;
-        tracker.arrow.setEnabled(false);
-        continue;
-      }
-
       // All players use server positions (map coordinates → world)
       const cx = penguin.position.x - mapCenterX;
       const cz = penguin.position.z - mapCenterZ;
       const y = 0.5;
 
-      // Detect position change → start interpolation
-      if (cx !== tracker.lastX || cz !== tracker.lastZ || y !== tracker.lastY) {
+      if (phase === "lobby") {
+        tracker.root.position.set(cx, y, cz);
+        tracker.interpFrom.set(cx, y, cz);
+        tracker.interpTo.set(cx, y, cz);
+        tracker.interpT = 1;
+        tracker.lastX = cx;
+        tracker.lastZ = cz;
+        tracker.lastY = y;
+      } else if (
+        cx !== tracker.lastX ||
+        cz !== tracker.lastZ ||
+        y !== tracker.lastY
+      ) {
         tracker.interpFrom.copyFrom(tracker.root.position);
         tracker.interpTo.set(cx, y, cz);
         tracker.interpT = 0;
@@ -875,7 +937,7 @@ class GameScene {
       }
 
       // Smooth position interpolation
-      if (tracker.interpT < 1) {
+      if (phase !== "lobby" && tracker.interpT < 1) {
         tracker.interpT = Math.min(
           1,
           tracker.interpT + dt / SERVER_INTERP_DURATION,
@@ -887,7 +949,7 @@ class GameScene {
           t,
           tracker.root.position,
         );
-      } else {
+      } else if (phase !== "lobby") {
         // Gently hold at target
         const blend = 1 - Math.exp(-10 * dt);
         tracker.root.position.x +=
@@ -927,12 +989,18 @@ class GameScene {
       const rad = (dir * Math.PI) / 180;
       const targetRotY = -rad + Math.PI / 2;
 
-      // Smooth rotation
-      let diff = targetRotY - tracker.currentRotY;
-      // Normalize diff to [-π, π]
-      while (diff > Math.PI) diff -= 2 * Math.PI;
-      while (diff < -Math.PI) diff += 2 * Math.PI;
-      tracker.currentRotY += diff * (1 - Math.exp(-10 * dt));
+      if (phase === "lobby") {
+        tracker.currentRotY = targetRotY;
+      } else if (!isCurrentPlayer && phase === "countdown") {
+        tracker.currentRotY = targetRotY;
+      } else {
+        let diff = targetRotY - tracker.currentRotY;
+        // Normalize diff to [-π, π]
+        while (diff > Math.PI) diff -= 2 * Math.PI;
+        while (diff < -Math.PI) diff += 2 * Math.PI;
+        const rotationSpeed = phase === "animating" ? 14 : 10;
+        tracker.currentRotY += diff * (1 - Math.exp(-rotationSpeed * dt));
+      }
       tracker.root.rotation.y = tracker.currentRotY;
 
       // Arrow visibility — hide during lobby and for eliminated players
@@ -976,37 +1044,18 @@ class GameScene {
         this.camera.target.y += (target.y - this.camera.target.y) * blend;
         this.camera.target.z += (target.z - this.camera.target.z) * blend;
 
-        // During countdown: camera orbit alpha drives aim direction
         if (phase === "countdown") {
-          // On transition to countdown, snap camera behind player's initial direction
-          if (this.lastPhase !== "countdown") {
-            const initDir = store.aimDirection;
-            this.camera.alpha = (initDir * Math.PI) / 180 - Math.PI;
-          }
-
-          // Derive aim direction from camera orbit angle
-          let newAimDir = ((this.camera.alpha + Math.PI) * 180) / Math.PI;
-          newAimDir = ((newAimDir % 360) + 360) % 360;
-
-          const currentAim = store.aimDirection;
-          let aimDiff = newAimDir - currentAim;
-          if (aimDiff > 180) aimDiff -= 360;
-          if (aimDiff < -180) aimDiff += 360;
-
-          if (Math.abs(aimDiff) > 0.3) {
-            store.setAimDirection(newAimDir);
-
-            // Throttle register_move sends to ~20fps
-            const now = Date.now();
-            if (now - this.lastMoveSendTime > 50) {
-              this.lastMoveSendTime = now;
-              try {
-                registerMove({ direction: newAimDir, power: store.aimPower });
-              } catch {
-                /* no websocket in test mode */
-              }
-            }
-          }
+          const targetAlpha = (store.aimDirection * Math.PI) / 180 - Math.PI;
+          let alphaDiff = targetAlpha - this.camera.alpha;
+          while (alphaDiff > Math.PI) alphaDiff -= 2 * Math.PI;
+          while (alphaDiff < -Math.PI) alphaDiff += 2 * Math.PI;
+          this.camera.alpha += alphaDiff * (1 - Math.exp(-8 * dt));
+          this.camera.radius +=
+            (COUNTDOWN_CAMERA_RADIUS - this.camera.radius) * blend;
+          this.camera.beta += (FOLLOW_CAMERA_BETA - this.camera.beta) * blend;
+        } else if (phase === "playing") {
+          this.camera.radius +=
+            (FOLLOW_CAMERA_RADIUS - this.camera.radius) * blend * 0.35;
         }
       } else {
         // Spectator: look at center
@@ -1142,7 +1191,7 @@ export default function GameArena({ playerId }: GameArenaProps) {
 
     const scene = new GameScene(canvas, playerId);
     sceneRef.current = scene;
-    setIsSceneReady(false);
+    setIsSceneReady(true);
     scene
       .init()
       .then(() => {
@@ -1239,13 +1288,10 @@ export default function GameArena({ playerId }: GameArenaProps) {
         />
       </CanvasErrorBoundary>
       {!isSceneReady && (
-        <div className="absolute inset-0 flex items-center justify-center bg-[#0a0a0f]">
-          <div className="text-center px-6">
-            <p className="text-white/70 text-sm font-medium">
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 rounded-full bg-black/50 px-4 py-2 backdrop-blur-sm">
+          <div className="text-center">
+            <p className="text-white/70 text-xs font-medium">
               Loading arena assets...
-            </p>
-            <p className="mt-2 text-white/35 text-xs">
-              Syncing map, environment, and penguins.
             </p>
           </div>
         </div>

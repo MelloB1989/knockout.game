@@ -29,7 +29,12 @@ export async function getSkins(): Promise<string[]> {
 
 export async function createGame(
   token: string,
-  body: { map_type: string; skin: string; position?: { x: number; z: number } }
+  body: {
+    map_type: string;
+    skin: string;
+    position?: { x: number; z: number };
+    wait_time_seconds?: number;
+  }
 ): Promise<{ game_id: string; host_id: string; game_state: unknown }> {
   return apiFetch("/v1/game/create", {
     method: "POST",

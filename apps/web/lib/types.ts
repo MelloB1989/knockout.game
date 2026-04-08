@@ -38,6 +38,9 @@ export interface GameState {
   wait_time: number;
   host_id: string;
   started: boolean;
+  accepting_moves: boolean;
+  server_frame: number;
+  server_time_ms: number;
 }
 
 export interface MapConfig {

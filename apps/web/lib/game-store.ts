@@ -9,7 +9,13 @@ import type {
   GameEndedPayload,
 } from "./types";
 
-export type GamePhase = "idle" | "lobby" | "countdown" | "playing" | "animating" | "ended";
+export type GamePhase =
+  | "idle"
+  | "lobby"
+  | "countdown"
+  | "playing"
+  | "animating"
+  | "ended";
 
 interface GameStore {
   // Core state
@@ -60,9 +66,21 @@ interface GameStore {
   setAimPower: (power: number) => void;
   submitMove: () => PenguinMove | null;
 
-  updateAnimatedPositions: (positions: Record<string, { x: number; z: number }>) => void;
+  updateAnimatedPositions: (
+    positions: Record<string, { x: number; z: number }>,
+  ) => void;
 
   reset: () => void;
+}
+
+function resolvePhaseFromGameState(
+  gs: GameState | null,
+  currentPhase: GamePhase,
+): GamePhase {
+  if (!gs) return "idle";
+  if (!gs.started) return "lobby";
+  if (currentPhase === "ended") return "ended";
+  return "playing";
 }
 
 const initialState = {
@@ -102,7 +120,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       currentRound: gs?.current_round ?? 1,
       animatedPositions: positions,
       isHost: !!(pid && gs?.host_id === pid),
-      phase: gs?.started ? (get().phase === "idle" ? "playing" : get().phase) : "lobby",
+      phase: resolvePhaseFromGameState(gs, get().phase),
     });
   },
   setPhase: (phase) => set({ phase }),
@@ -133,7 +151,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       roundMoves: null,
       eliminatedThisRound: [],
       aimDirection: newAimDir,
-      aimPower: prevPhase === "countdown" ? currentAimPower : currentAimPower || 6,
+      aimPower:
+        prevPhase === "countdown" ? currentAimPower : currentAimPower || 6,
     });
   },
 
@@ -172,7 +191,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   handleMoveAck: () => {
-    set({ moveSubmitted: true });
+    // Live aiming sends many register_move events during countdown.
+    // An ack confirms receipt, but it should not freeze local input.
+    set({ moveSubmitted: false });
   },
 
   handlePositionUpdate: (gs) => {
@@ -182,9 +203,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
         positions[id] = { x: p.position.x, z: p.position.z };
       }
     }
+    const currentPhase = get().phase;
     set({
       gameState: gs,
       animatedPositions: positions,
+      phase:
+        currentPhase === "countdown" ||
+        currentPhase === "animating" ||
+        currentPhase === "ended"
+          ? currentPhase
+          : resolvePhaseFromGameState(gs, currentPhase),
     });
   },
 

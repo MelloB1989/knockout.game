@@ -44,6 +44,13 @@ type incomingMessage struct {
 	Data  json.RawMessage `json:"data,omitempty"`
 }
 
+type lobbyPositionPayload struct {
+	Position  *entities.Position `json:"position,omitempty"`
+	X         *float64           `json:"x,omitempty"`
+	Z         *float64           `json:"z,omitempty"`
+	Direction *float64           `json:"direction,omitempty"`
+}
+
 type countdownPayload struct {
 	Round            int `json:"round"`
 	SecondsRemaining int `json:"seconds_remaining"`
@@ -65,6 +72,130 @@ type moveAckPayload struct {
 }
 
 var runningGames sync.Map
+var gameLocks sync.Map
+var localPositionSubscribers sync.Map
+var redisPositionPublishers sync.Map
+
+type positionSubscriberSet struct {
+	mu   sync.RWMutex
+	subs map[chan *physics.GameState]struct{}
+}
+
+type positionPublishWorker struct {
+	mu      sync.Mutex
+	running bool
+	latest  *physics.GameState
+}
+
+func gameLock(gameId string) *sync.Mutex {
+	lock, _ := gameLocks.LoadOrStore(gameId, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
+func localPositionSet(gameId string) *positionSubscriberSet {
+	set, _ := localPositionSubscribers.LoadOrStore(gameId, &positionSubscriberSet{
+		subs: make(map[chan *physics.GameState]struct{}),
+	})
+	return set.(*positionSubscriberSet)
+}
+
+func subscribeLocalPositions(gameId string) (chan *physics.GameState, func()) {
+	set := localPositionSet(gameId)
+	ch := make(chan *physics.GameState, 1)
+
+	set.mu.Lock()
+	set.subs[ch] = struct{}{}
+	set.mu.Unlock()
+
+	return ch, func() {
+		set.mu.Lock()
+		delete(set.subs, ch)
+		empty := len(set.subs) == 0
+		set.mu.Unlock()
+		if empty {
+			localPositionSubscribers.Delete(gameId)
+		}
+	}
+}
+
+func publishLocalPositions(gameId string, snapshot *physics.GameState) {
+	if snapshot == nil {
+		return
+	}
+
+	setValue, ok := localPositionSubscribers.Load(gameId)
+	if !ok {
+		return
+	}
+
+	set := setValue.(*positionSubscriberSet)
+	set.mu.RLock()
+	defer set.mu.RUnlock()
+
+	for ch := range set.subs {
+		select {
+		case ch <- snapshot:
+		default:
+			select {
+			case <-ch:
+			default:
+			}
+			select {
+			case ch <- snapshot:
+			default:
+			}
+		}
+	}
+}
+
+func redisPositionWorker(gameId string) *positionPublishWorker {
+	worker, _ := redisPositionPublishers.LoadOrStore(gameId, &positionPublishWorker{})
+	return worker.(*positionPublishWorker)
+}
+
+func queueRedisPositionPublish(game *repository.Game, snapshot *physics.GameState) {
+	if game == nil || snapshot == nil {
+		return
+	}
+
+	worker := redisPositionWorker(game.Id)
+	worker.mu.Lock()
+	worker.latest = snapshot
+	if worker.running {
+		worker.mu.Unlock()
+		return
+	}
+	worker.running = true
+	worker.mu.Unlock()
+
+	go func() {
+		for {
+			worker.mu.Lock()
+			next := worker.latest
+			if next == nil {
+				worker.running = false
+				worker.mu.Unlock()
+				return
+			}
+			worker.latest = nil
+			worker.mu.Unlock()
+
+			_ = game.PublishEvent(repository.PlayersPositionUpdate, nil, next)
+		}
+	}()
+}
+
+func publishPlayersPositionUpdate(game *repository.Game) error {
+	if game == nil || game.GameState == nil {
+		return nil
+	}
+	game.GameState.ServerFrame++
+	game.GameState.ServerTimeMs = time.Now().UnixMilli()
+	snapshot := cloneGameState(game.GameState)
+	publishLocalPositions(game.Id, snapshot)
+	queueRedisPositionPublish(game, snapshot)
+	return nil
+}
 
 func WSHandler(c *websocket.Conn) {
 	defer func() {
@@ -113,9 +244,31 @@ func WSHandler(c *websocket.Conn) {
 
 	sub := game.Subscribe()
 	defer sub.Close()
+	localPositions, unsubscribeLocalPositions := subscribeLocalPositions(gameId)
+	defer unsubscribeLocalPositions()
 
 	outbound := make(chan outgoing, 32)
 	positionUpdates := make(chan outgoing, 1)
+	var lastPositionFrameMu sync.Mutex
+	lastPositionFrame := int64(-1)
+
+	shouldQueuePositionFrame := func(gs *physics.GameState) bool {
+		if gs == nil {
+			return true
+		}
+		frame := gs.ServerFrame
+		if frame <= 0 {
+			return true
+		}
+
+		lastPositionFrameMu.Lock()
+		defer lastPositionFrameMu.Unlock()
+		if frame <= lastPositionFrame {
+			return false
+		}
+		lastPositionFrame = frame
+		return true
+	}
 
 	queueOutgoing := func(msg outgoing) bool {
 		select {
@@ -220,10 +373,36 @@ func WSHandler(c *websocket.Conn) {
 
 	go func() {
 		for {
+			select {
+			case <-done:
+				return
+			case gs, ok := <-localPositions:
+				if !ok {
+					return
+				}
+				if !shouldQueuePositionFrame(gs) {
+					continue
+				}
+				if !queueOutgoing(outgoing{
+					Event: repository.PlayersPositionUpdate,
+					Data:  maskGameStateForPlayer(gs, playerId),
+				}) {
+					return
+				}
+			}
+		}
+	}()
+
+	go func() {
+		for {
 			event, err := sub.ReceiveEvent()
 			if err != nil {
 				closeConn()
 				return
+			}
+
+			if event.Type == repository.PlayersPositionUpdate && !shouldQueuePositionFrame(event.GameState) {
+				continue
 			}
 
 			var data any
@@ -262,182 +441,213 @@ func WSHandler(c *websocket.Conn) {
 			continue
 		}
 
-		game, err = repository.LoadGame(gameId)
-		if err != nil || game.GameState == nil {
-			writeJSON(outgoing{
-				Event: repository.ErrorEvent,
-				Error: "failed to load game",
-			})
-			continue
-		}
+		func() {
+			lock := gameLock(gameId)
+			lock.Lock()
+			defer lock.Unlock()
 
-		if msg.Event != registerPlayer {
-			player, ok := game.GameState.Players[playerId]
-			if !ok || player.PlayerSecret != playerSecret {
+			game, err := repository.LoadGame(gameId)
+			if err != nil || game.GameState == nil {
 				writeJSON(outgoing{
 					Event: repository.ErrorEvent,
-					Error: "unauthorized",
+					Error: "failed to load game",
 				})
-				continue
+				return
 			}
-		}
 
-		switch msg.Event {
-		case registerPlayer:
-			var player entities.Penguin
-			if err := json.Unmarshal(msg.Data, &player); err != nil {
-				writeJSON(outgoing{
-					Event: repository.ErrorEvent,
-					Error: err.Error(),
-				})
-				continue
-			}
-			if playerId != "" {
-				player.Id = playerId
-			}
-			if existing, ok := game.GameState.Players[player.Id]; ok && existing.PlayerSecret != "" && existing.PlayerSecret != playerSecret {
-				writeJSON(outgoing{
-					Event: repository.ErrorEvent,
-					Error: "unauthorized",
-				})
-				continue
-			}
-			if existing, ok := game.GameState.Players[player.Id]; ok {
-				existing.PlayerSecret = playerSecret
-				if player.Skin != "" && !game.GameState.Started {
-					existing.Skin = player.Skin
+			if msg.Event != registerPlayer {
+				player, ok := game.GameState.Players[playerId]
+				if !ok || player.PlayerSecret != playerSecret {
+					writeJSON(outgoing{
+						Event: repository.ErrorEvent,
+						Error: "unauthorized",
+					})
+					return
 				}
-				game.GameState.Players[player.Id] = existing
-				if _, err := game.UpdateGame(); err != nil {
+			}
+
+			switch msg.Event {
+			case registerPlayer:
+				var player entities.Penguin
+				if err := json.Unmarshal(msg.Data, &player); err != nil {
 					writeJSON(outgoing{
 						Event: repository.ErrorEvent,
 						Error: err.Error(),
 					})
+					return
 				}
-				continue
-			}
+				if playerId != "" {
+					player.Id = playerId
+				}
+				if existing, ok := game.GameState.Players[player.Id]; ok && existing.PlayerSecret != "" && existing.PlayerSecret != playerSecret {
+					writeJSON(outgoing{
+						Event: repository.ErrorEvent,
+						Error: "unauthorized",
+					})
+					return
+				}
+				if existing, ok := game.GameState.Players[player.Id]; ok {
+					existing.PlayerSecret = playerSecret
+					if player.Skin != "" && !game.GameState.Started {
+						existing.Skin = player.Skin
+					}
+					game.GameState.Players[player.Id] = existing
+					if _, err := game.UpdateGame(); err != nil {
+						writeJSON(outgoing{
+							Event: repository.ErrorEvent,
+							Error: err.Error(),
+						})
+					}
+					return
+				}
 
-			player.PlayerSecret = playerSecret
-			player.Mass = physics.NormalMass
-			if strings.HasPrefix(player.Id, "anonymous") {
-				player.Type = entities.AnonymousPlayer
-			} else {
-				player.Type = entities.RegisteredPlayer
-			}
-			player.Accel = 0
-			player.Velocity = 0
-			player.Direction = 0
-			player.Eliminated = 0
+				player.PlayerSecret = playerSecret
+				player.Mass = physics.NormalMass
+				if strings.HasPrefix(player.Id, "anonymous") {
+					player.Type = entities.AnonymousPlayer
+				} else {
+					player.Type = entities.RegisteredPlayer
+				}
+				player.Accel = 0
+				player.Velocity = 0
+				player.Direction = 0
+				player.Eliminated = 0
 
-			// Assign random spawn position within map bounds (with 15% margin)
-			marginX := float64(game.GameState.Map.Length) * 0.15
-			marginZ := float64(game.GameState.Map.Width) * 0.15
-			player.Position.X = marginX + rand.Float64()*(float64(game.GameState.Map.Length)-2*marginX)
-			player.Position.Z = marginZ + rand.Float64()*(float64(game.GameState.Map.Width)-2*marginZ)
+				// Assign random spawn position within map bounds (with 15% margin)
+				marginX := float64(game.GameState.Map.Length) * 0.15
+				marginZ := float64(game.GameState.Map.Width) * 0.15
+				player.Position.X = marginX + rand.Float64()*(float64(game.GameState.Map.Length)-2*marginX)
+				player.Position.Z = marginZ + rand.Float64()*(float64(game.GameState.Map.Width)-2*marginZ)
 
-			if game.GameState.HostId == "" {
-				game.GameState.HostId = player.Id
-			}
+				if game.GameState.HostId == "" {
+					game.GameState.HostId = player.Id
+				}
 
-			done, err := game.RegisterPlayer(player)
-			if err != nil {
-				writeJSON(outgoing{
-					Event: repository.ErrorEvent,
-					Error: err.Error(),
-				})
-				continue
-			}
+				done, err := game.RegisterPlayer(player)
+				if err != nil {
+					writeJSON(outgoing{
+						Event: repository.ErrorEvent,
+						Error: err.Error(),
+					})
+					return
+				}
 
-			safePlayer := sanitizePlayer(player)
-			if done {
-				_ = game.PublishEvent(repository.PlayerJoined, safePlayer, nil)
-			}
-		case registerMove:
-			var playerMove entities.PenguinMove
-			if err := json.Unmarshal(msg.Data, &playerMove); err != nil {
-				writeJSON(outgoing{
-					Event: repository.ErrorEvent,
-					Error: err.Error(),
-				})
-				continue
-			}
-			player := game.GameState.Players[playerId]
-			if player.Eliminated > 0 {
-				continue
-			}
-			if game.GameState.Started && !game.GameState.AcceptingMoves {
-				continue
-			}
-			done, err := game.RegisterPlayerMove(playerId, playerMove)
-			if err != nil {
-				writeJSON(outgoing{
-					Event: repository.ErrorEvent,
-					Error: err.Error(),
-				})
-				continue
-			}
-			if done {
+				safePlayer := sanitizePlayer(player)
+				if done {
+					_ = game.PublishEvent(repository.PlayerJoined, safePlayer, nil)
+				}
+			case registerMove:
+				var playerMove entities.PenguinMove
+				if err := json.Unmarshal(msg.Data, &playerMove); err != nil {
+					writeJSON(outgoing{
+						Event: repository.ErrorEvent,
+						Error: err.Error(),
+					})
+					return
+				}
+				player := game.GameState.Players[playerId]
+				if player.Eliminated > 0 {
+					return
+				}
+				if game.GameState.Started && !game.GameState.AcceptingMoves {
+					return
+				}
+
+				player.Direction = playerMove.Direction
+				game.GameState.Players[playerId] = player
+
+				game.GameState.CurrentMoves[playerId] = playerMove
 				writeJSON(outgoing{
 					Event: repository.PlayerMoveAck,
 					Data: moveAckPayload{
 						PlayerId: playerId,
 					},
 				})
-			}
-		case updatePosition:
-			// Accept lobby/eliminated position updates and broadcast
-			var pos entities.Position
-			if err := json.Unmarshal(msg.Data, &pos); err != nil {
-				continue
-			}
-			player, ok := game.GameState.Players[playerId]
-			if !ok {
-				continue
-			}
-			if game.GameState.Started && player.Eliminated == 0 {
-				continue
-			}
-			player.Position = pos
-			game.GameState.Players[playerId] = player
-			if _, err := game.UpdateGame(); err == nil {
-				_ = game.PublishEvent(repository.PlayersPositionUpdate, nil, game.GameState)
-			}
-		case startGame:
-			if game.GameState.HostId != "" && game.GameState.HostId != playerId {
-				writeJSON(outgoing{
-					Event: repository.ErrorEvent,
-					Error: "only host can start the game",
-				})
-				continue
-			}
-			if game.GameState.HostId == "" {
-				game.GameState.HostId = playerId
+				if err := publishPlayersPositionUpdate(game); err != nil {
+					writeJSON(outgoing{
+						Event: repository.ErrorEvent,
+						Error: err.Error(),
+					})
+				}
+			case updatePosition:
+				// Accept lobby/eliminated position updates and broadcast
+				pos, direction, err := parseLobbyPositionPayload(msg.Data)
+				if err != nil {
+					return
+				}
+				player, ok := game.GameState.Players[playerId]
+				if !ok {
+					return
+				}
+				if game.GameState.Started && player.Eliminated == 0 {
+					return
+				}
+				player.Position = pos
+				if direction != nil {
+					player.Direction = *direction
+				}
+				game.GameState.Players[playerId] = player
+				if err := publishPlayersPositionUpdate(game); err != nil {
+					writeJSON(outgoing{
+						Event: repository.ErrorEvent,
+						Error: err.Error(),
+					})
+				}
+			case startGame:
+				if game.GameState.HostId != "" && game.GameState.HostId != playerId {
+					writeJSON(outgoing{
+						Event: repository.ErrorEvent,
+						Error: "only host can start the game",
+					})
+					return
+				}
+				if game.GameState.HostId == "" {
+					game.GameState.HostId = playerId
+					if _, err := game.UpdateGame(); err != nil {
+						writeJSON(outgoing{
+							Event: repository.ErrorEvent,
+							Error: err.Error(),
+						})
+						return
+					}
+				}
+				if game.GameState.Started {
+					writeJSON(outgoing{
+						Event: repository.ErrorEvent,
+						Error: "game already started",
+					})
+					return
+				}
+
+				game.GameState.Started = true
+				game.GameState.AcceptingMoves = true
+				if game.GameState.CurrentRound <= 0 {
+					game.GameState.CurrentRound = 1
+				}
+				if game.GameState.WaitTime == 0 {
+					game.GameState.WaitTime = 2 * time.Second
+				}
 				if _, err := game.UpdateGame(); err != nil {
 					writeJSON(outgoing{
 						Event: repository.ErrorEvent,
 						Error: err.Error(),
 					})
-					continue
+					return
 				}
-			}
-			if game.GameState.Started {
+				_ = game.PublishEvent(repository.GameState, nil, game.GameState)
+
+				startGameLoop(gameId)
 				writeJSON(outgoing{
-					Event: repository.ErrorEvent,
-					Error: "game already started",
+					Event: repository.GameState,
+					Data:  maskGameStateForPlayer(game.GameState, playerId),
 				})
-				continue
+			case getState:
+				writeJSON(outgoing{
+					Event: repository.GameState,
+					Data:  maskGameStateForPlayer(game.GameState, playerId),
+				})
 			}
-			startGameLoop(gameId)
-			writeJSON(outgoing{
-				Event: repository.GameState,
-				Data:  maskGameStateForPlayer(game.GameState, playerId),
-			})
-		case getState:
-			writeJSON(outgoing{
-				Event: repository.GameState,
-				Data:  maskGameStateForPlayer(game.GameState, playerId),
-			})
-		}
+		}()
 	}
 }
 
@@ -465,6 +675,46 @@ func maskGameStateForPlayer(gs *physics.GameState, viewerId string) *physics.Gam
 	}
 
 	return &masked
+}
+
+func cloneGameState(gs *physics.GameState) *physics.GameState {
+	if gs == nil {
+		return nil
+	}
+
+	cloned := *gs
+	cloned.Players = make(map[string]entities.Penguin, len(gs.Players))
+	for id, player := range gs.Players {
+		cloned.Players[id] = player
+	}
+	cloned.CurrentMoves = copyMoves(gs.CurrentMoves)
+	if gs.LastHitBy != nil {
+		cloned.LastHitBy = make(map[string]string, len(gs.LastHitBy))
+		for id, hitter := range gs.LastHitBy {
+			cloned.LastHitBy[id] = hitter
+		}
+	}
+	return &cloned
+}
+
+func parseLobbyPositionPayload(raw json.RawMessage) (entities.Position, *float64, error) {
+	var payload lobbyPositionPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return entities.Position{}, nil, err
+	}
+
+	if payload.Position != nil {
+		return *payload.Position, payload.Direction, nil
+	}
+
+	pos := entities.Position{}
+	if payload.X != nil {
+		pos.X = *payload.X
+	}
+	if payload.Z != nil {
+		pos.Z = *payload.Z
+	}
+	return pos, payload.Direction, nil
 }
 
 func sanitizePlayer(player entities.Penguin) entities.Penguin {
@@ -546,8 +796,11 @@ func startGameLoop(gameId string) {
 			}
 		}()
 		for {
+			lock := gameLock(gameId)
+			lock.Lock()
 			game, err := repository.LoadGame(gameId)
 			if err != nil || game.GameState == nil {
+				lock.Unlock()
 				return
 			}
 
@@ -557,7 +810,7 @@ func startGameLoop(gameId string) {
 					game.GameState.CurrentRound = 1
 				}
 				if game.GameState.WaitTime == 0 {
-					game.GameState.WaitTime = 8 * time.Second
+					game.GameState.WaitTime = 2 * time.Second
 				}
 				if _, err := game.UpdateGame(); err == nil {
 					_ = game.PublishEvent(repository.GameState, nil, game.GameState)
@@ -569,27 +822,35 @@ func startGameLoop(gameId string) {
 				_ = game.PublishEvent(repository.GameEnded, struct {
 					WinnerId string `json:"winner_id,omitempty"`
 				}{WinnerId: winnerId}, game.GameState)
+				lock.Unlock()
 				return
 			}
 
 			if !game.GameState.AcceptingMoves {
 				game.GameState.AcceptingMoves = true
 				if _, err := game.UpdateGame(); err != nil {
+					lock.Unlock()
 					return
 				}
 			}
 
 			round := game.GameState.CurrentRound
-			emitCountdown(game, round, game.GameState.WaitTime)
+			waitTime := game.GameState.WaitTime
+			lock.Unlock()
 
+			emitCountdown(game, round, waitTime)
+
+			lock.Lock()
 			game, err = repository.LoadGame(gameId)
 			if err != nil || game.GameState == nil {
+				lock.Unlock()
 				return
 			}
 
 			if game.GameState.AcceptingMoves {
 				game.GameState.AcceptingMoves = false
 				if _, err := game.UpdateGame(); err != nil {
+					lock.Unlock()
 					return
 				}
 			}
@@ -607,11 +868,12 @@ func startGameLoop(gameId string) {
 			// sleep to spread updates over time for smooth frontend animation.
 			const posPublishInterval = 50 * time.Millisecond
 			game.GameState.PlayMovesWithCallback(func(players map[string]entities.Penguin) {
-				_ = game.PublishEvent(repository.PlayersPositionUpdate, nil, game.GameState)
+				_ = publishPlayersPositionUpdate(game)
 				time.Sleep(posPublishInterval)
 			})
 
 			if _, err := game.UpdateGame(); err != nil {
+				lock.Unlock()
 				return
 			}
 
@@ -634,6 +896,7 @@ func startGameLoop(gameId string) {
 			}
 
 			_ = game.PublishEvent(repository.GameState, nil, game.GameState)
+			lock.Unlock()
 		}
 	}()
 }

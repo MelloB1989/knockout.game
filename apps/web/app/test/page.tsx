@@ -74,9 +74,12 @@ function initialGameState(): GameState {
     map: { id: "test", type: "frozen_lake", length: MAP_LENGTH, width: MAP_WIDTH, friction: MAP_FRICTION },
     current_moves: {},
     current_round: 1,
-    wait_time: 8,
+    wait_time: 2,
     host_id: PLAYER_ID,
     started: false,
+    accepting_moves: true,
+    server_frame: 0,
+    server_time_ms: 0,
   };
 }
 

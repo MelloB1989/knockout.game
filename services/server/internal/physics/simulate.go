@@ -16,6 +16,8 @@ type GameState struct {
 	HostId          string                          `json:"host_id"`
 	Started         bool                            `json:"started"`
 	AcceptingMoves  bool                            `json:"accepting_moves"`
+	ServerFrame     int64                           `json:"server_frame"`
+	ServerTimeMs    int64                           `json:"server_time_ms"`
 	roundEliminated bool
 	LastHitBy       map[string]string `json:"-"` // tracks last collision partner per player (ephemeral)
 }
@@ -101,7 +103,7 @@ func (gs *GameState) SimulateTick(dt float64) bool {
 		}
 
 		if player.Accel != 0 {
-			player.Velocity += player.Accel * dt
+			player.Velocity += player.Accel * launchImpulseDT
 			player.Accel = 0
 		}
 

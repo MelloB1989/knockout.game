@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"knockout/internal/models"
+	"knockout/internal/redisclient"
 
 	"github.com/MelloB1989/karma/config"
 	"github.com/MelloB1989/karma/utils"
@@ -50,8 +51,7 @@ func GuestAuthHandler(c *fiber.Ctx) error {
 
 	playerId := "anonymous_" + utils.GenerateID(8)
 
-	rc := utils.RedisConnect()
-	defer rc.Close()
+	rc := redisclient.Client()
 
 	playerDetails := redisPlayerDetails{
 		PlayerId:     playerId,
@@ -98,8 +98,7 @@ func GuestAuthHandler(c *fiber.Ctx) error {
 }
 
 func RefreshGuestHandler(c *fiber.Ctx) error {
-	rc := utils.RedisConnect()
-	defer rc.Close()
+	rc := redisclient.Client()
 
 	playerId := c.Locals("pid").(string)
 	playerSecret := c.Locals("secret").(string)

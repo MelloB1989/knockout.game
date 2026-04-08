@@ -156,6 +156,7 @@ export default function CreatePage() {
       const res = await createGame(token, {
         map_type: selectedMap,
         skin: selectedSkin,
+        wait_time_seconds: 10,
       });
       sessionStorage.setItem("selectedSkin", selectedSkin);
       setGameId(res.game_id);
