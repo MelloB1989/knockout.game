@@ -22,6 +22,19 @@ type GameState struct {
 	LastHitBy       map[string]string `json:"-"` // tracks last collision partner per player (ephemeral)
 }
 
+type velocityVector struct {
+	X float64
+	Z float64
+}
+
+type orientedCollider struct {
+	center    entities.Position
+	right     velocityVector
+	forward   velocityVector
+	halfWidth float64
+	halfDepth float64
+}
+
 func CreateGameState(mapType string, l, w int) *GameState {
 	return &GameState{
 		Players: make(map[string]entities.Penguin),
@@ -94,8 +107,7 @@ func (gs *GameState) SimulateTick(dt float64) bool {
 		damping = 0
 	}
 
-	velocitiesX := make(map[string]float64, len(gs.Players))
-	velocitiesZ := make(map[string]float64, len(gs.Players))
+	velocities := make(map[string]velocityVector, len(gs.Players))
 
 	for playerId, player := range gs.Players {
 		if player.Eliminated > 0 {
@@ -107,119 +119,56 @@ func (gs *GameState) SimulateTick(dt float64) bool {
 			player.Accel = 0
 		}
 
-		player.Velocity *= damping
-
 		if math.Abs(player.Velocity) < velocityEpsilon {
 			player.Velocity = 0
 		}
 
 		rad := player.Direction * (math.Pi / 180)
-		velocitiesX[playerId] = player.Velocity * math.Cos(rad)
-		velocitiesZ[playerId] = player.Velocity * math.Sin(rad)
-
-		gs.Players[playerId] = player
-	}
-
-	for playerId, player := range gs.Players {
-		if player.Eliminated > 0 {
-			continue
-		}
-		vx, ok := velocitiesX[playerId]
-		if !ok {
-			continue
-		}
-		vz := velocitiesZ[playerId]
-		if vx == 0 && vz == 0 {
-			continue
-		}
-
-		player.Position.X += vx * dt
-		player.Position.Z += vz * dt
-
-		if player.Position.X < 0 ||
-			player.Position.X > float64(gs.Map.Length) ||
-			player.Position.Z < 0 ||
-			player.Position.Z > float64(gs.Map.Width) {
-			player.Eliminated = gs.CurrentRound
-			player.Velocity = 0
-			player.Accel = 0
-			velocitiesX[playerId] = 0
-			velocitiesZ[playerId] = 0
-			gs.roundEliminated = true
-
-			// Award score to the player who last hit the eliminated player
-			if gs.LastHitBy != nil {
-				if hitterId, ok := gs.LastHitBy[playerId]; ok {
-					if hitter, ok2 := gs.Players[hitterId]; ok2 && hitter.Eliminated == 0 {
-						hitter.Score += 10
-						gs.Players[hitterId] = hitter
-					}
-				}
-			}
+		velocities[playerId] = velocityVector{
+			X: player.Velocity * math.Cos(rad),
+			Z: player.Velocity * math.Sin(rad),
 		}
 
 		gs.Players[playerId] = player
 	}
 
-	playerIds := make([]string, 0, len(gs.Players))
-	for playerId, player := range gs.Players {
-		if player.Eliminated > 0 {
-			continue
-		}
-		playerIds = append(playerIds, playerId)
+	subDt := dt / float64(collisionSubsteps)
+	subDamping := 0.0
+	if damping > 0 {
+		subDamping = math.Pow(damping, 1/float64(collisionSubsteps))
 	}
 
-	for i := 0; i < len(playerIds); i++ {
-		for j := i + 1; j < len(playerIds); j++ {
-			id1 := playerIds[i]
-			id2 := playerIds[j]
-			p1 := gs.Players[id1]
-			p2 := gs.Players[id2]
-
-			dx := p1.Position.X - p2.Position.X
-			dz := p1.Position.Z - p2.Position.Z
-			distSq := dx*dx + dz*dz
-			if distSq == 0 || distSq > collisionDistance*collisionDistance {
+	for step := 0; step < collisionSubsteps; step++ {
+		for playerId, player := range gs.Players {
+			if player.Eliminated > 0 {
 				continue
 			}
 
-			v1x := velocitiesX[id1]
-			v1z := velocitiesZ[id1]
-			v2x := velocitiesX[id2]
-			v2z := velocitiesZ[id2]
-
-			dvx := v1x - v2x
-			dvz := v1z - v2z
-			dot := dvx*dx + dvz*dz
-			if dot >= 0 {
+			velocity, ok := velocities[playerId]
+			if !ok {
 				continue
 			}
 
-			m1 := p1.Mass
-			m2 := p2.Mass
-			if m1+m2 == 0 {
-				continue
+			velocity.X *= subDamping
+			velocity.Z *= subDamping
+			if math.Hypot(velocity.X, velocity.Z) < velocityEpsilon {
+				velocity = velocityVector{}
 			}
 
-			factor1 := (2 * m2 / (m1 + m2)) * (dot / distSq)
-			v1x -= factor1 * dx
-			v1z -= factor1 * dz
+			player.Position.X += velocity.X * subDt
+			player.Position.Z += velocity.Z * subDt
 
-			factor2 := (2 * m1 / (m1 + m2)) * (dot / distSq)
-			v2x += factor2 * dx
-			v2z += factor2 * dz
+			velocities[playerId] = velocity
+			gs.Players[playerId] = player
+		}
 
-			velocitiesX[id1] = v1x
-			velocitiesZ[id1] = v1z
-			velocitiesX[id2] = v2x
-			velocitiesZ[id2] = v2z
+		gs.eliminateOutOfBoundsPlayers(velocities)
 
-			// Track collision partners for scoring
-			if gs.LastHitBy == nil {
-				gs.LastHitBy = make(map[string]string)
+		for pass := 0; pass < collisionPasses; pass++ {
+			if !gs.resolvePlayerCollisions(velocities) {
+				break
 			}
-			gs.LastHitBy[id1] = id2
-			gs.LastHitBy[id2] = id1
+			gs.eliminateOutOfBoundsPlayers(velocities)
 		}
 	}
 
@@ -228,17 +177,16 @@ func (gs *GameState) SimulateTick(dt float64) bool {
 		if player.Eliminated > 0 {
 			continue
 		}
-		vx, ok := velocitiesX[playerId]
+		velocity, ok := velocities[playerId]
 		if !ok {
 			continue
 		}
-		vz := velocitiesZ[playerId]
-		speed := math.Hypot(vx, vz)
+		speed := math.Hypot(velocity.X, velocity.Z)
 		if speed < velocityEpsilon {
 			player.Velocity = 0
 		} else {
 			player.Velocity = speed
-			direction := math.Atan2(vz, vx) * (180 / math.Pi)
+			direction := math.Atan2(velocity.Z, velocity.X) * (180 / math.Pi)
 			if direction < 0 {
 				direction += 360
 			}
@@ -249,6 +197,262 @@ func (gs *GameState) SimulateTick(dt float64) bool {
 	}
 
 	return allStopped
+}
+
+func (gs *GameState) eliminateOutOfBoundsPlayers(velocities map[string]velocityVector) {
+	for playerId, player := range gs.Players {
+		if player.Eliminated > 0 || !gs.isOutOfBounds(player.Position, player.Direction) {
+			continue
+		}
+		gs.eliminatePlayer(playerId, player, velocities)
+	}
+}
+
+func (gs *GameState) eliminatePlayer(playerId string, player entities.Penguin, velocities map[string]velocityVector) {
+	player.Eliminated = gs.CurrentRound
+	player.Velocity = 0
+	player.Accel = 0
+	velocities[playerId] = velocityVector{}
+	gs.roundEliminated = true
+	gs.Players[playerId] = player
+
+	if gs.LastHitBy == nil {
+		return
+	}
+
+	hitterId, ok := gs.LastHitBy[playerId]
+	if !ok {
+		return
+	}
+
+	hitter, ok := gs.Players[hitterId]
+	if !ok || hitter.Eliminated > 0 {
+		return
+	}
+
+	hitter.Score += 10
+	gs.Players[hitterId] = hitter
+}
+
+func (gs *GameState) isOutOfBounds(position entities.Position, direction float64) bool {
+	collider := makePenguinCollider(position, direction)
+	extentX, extentZ := collider.axisAlignedExtents()
+	minX := collider.center.X - extentX
+	maxX := collider.center.X + extentX
+	minZ := collider.center.Z - extentZ
+	maxZ := collider.center.Z + extentZ
+	return minX < 0 ||
+		maxX > float64(gs.Map.Length) ||
+		minZ < 0 ||
+		maxZ > float64(gs.Map.Width)
+}
+
+func (gs *GameState) resolvePlayerCollisions(velocities map[string]velocityVector) bool {
+	playerIds := make([]string, 0, len(gs.Players))
+	for playerId, player := range gs.Players {
+		if player.Eliminated > 0 {
+			continue
+		}
+		playerIds = append(playerIds, playerId)
+	}
+
+	resolved := false
+	for i := 0; i < len(playerIds); i++ {
+		for j := i + 1; j < len(playerIds); j++ {
+			id1 := playerIds[i]
+			id2 := playerIds[j]
+			p1 := gs.Players[id1]
+			p2 := gs.Players[id2]
+			v1 := velocities[id1]
+			v2 := velocities[id2]
+
+			collided, impacted := resolvePenguinCollision(&p1, &p2, &v1, &v2)
+			if !collided {
+				continue
+			}
+
+			gs.Players[id1] = p1
+			gs.Players[id2] = p2
+			velocities[id1] = v1
+			velocities[id2] = v2
+			resolved = true
+
+			if impacted {
+				if gs.LastHitBy == nil {
+					gs.LastHitBy = make(map[string]string)
+				}
+				gs.LastHitBy[id1] = id2
+				gs.LastHitBy[id2] = id1
+			}
+		}
+	}
+
+	return resolved
+}
+
+func resolvePenguinCollision(p1, p2 *entities.Penguin, v1, v2 *velocityVector) (bool, bool) {
+	c1 := penguinColliderFromPenguin(*p1)
+	c2 := penguinColliderFromPenguin(*p2)
+	nx, nz, overlap, collided := colliderContactNormal(c1, c2)
+	if !collided {
+		return false, false
+	}
+
+	invMass1 := inverseMass(p1.Mass)
+	invMass2 := inverseMass(p2.Mass)
+	invMassSum := invMass1 + invMass2
+	if invMassSum == 0 {
+		return false, false
+	}
+
+	if overlap > 0 {
+		correction := math.Max(overlap-collisionSlop, 0) * correctionPercent / invMassSum
+		if correction > 0 {
+			correctionX := nx * correction
+			correctionZ := nz * correction
+			p1.Position.X -= correctionX * invMass1
+			p1.Position.Z -= correctionZ * invMass1
+			p2.Position.X += correctionX * invMass2
+			p2.Position.Z += correctionZ * invMass2
+		}
+	}
+
+	relativeX := v2.X - v1.X
+	relativeZ := v2.Z - v1.Z
+	velocityAlongNormal := relativeX*nx + relativeZ*nz
+	if velocityAlongNormal >= 0 {
+		return true, false
+	}
+
+	impulseMagnitude := -(1 + collisionBounce) * velocityAlongNormal / invMassSum
+	impulseX := nx * impulseMagnitude
+	impulseZ := nz * impulseMagnitude
+
+	v1.X -= impulseX * invMass1
+	v1.Z -= impulseZ * invMass1
+	v2.X += impulseX * invMass2
+	v2.Z += impulseZ * invMass2
+
+	if collisionFriction <= 0 {
+		return true, true
+	}
+
+	relativeX = v2.X - v1.X
+	relativeZ = v2.Z - v1.Z
+	tangentX := relativeX - (relativeX*nx+relativeZ*nz)*nx
+	tangentZ := relativeZ - (relativeX*nx+relativeZ*nz)*nz
+	tangentMag := math.Hypot(tangentX, tangentZ)
+	if tangentMag <= zeroDistanceEps {
+		return true, true
+	}
+
+	tangentX /= tangentMag
+	tangentZ /= tangentMag
+
+	frictionImpulseMagnitude := -(relativeX*tangentX + relativeZ*tangentZ) / invMassSum
+	maxFrictionImpulse := impulseMagnitude * collisionFriction
+	if frictionImpulseMagnitude > maxFrictionImpulse {
+		frictionImpulseMagnitude = maxFrictionImpulse
+	}
+	if frictionImpulseMagnitude < -maxFrictionImpulse {
+		frictionImpulseMagnitude = -maxFrictionImpulse
+	}
+
+	frictionImpulseX := tangentX * frictionImpulseMagnitude
+	frictionImpulseZ := tangentZ * frictionImpulseMagnitude
+	v1.X -= frictionImpulseX * invMass1
+	v1.Z -= frictionImpulseZ * invMass1
+	v2.X += frictionImpulseX * invMass2
+	v2.Z += frictionImpulseZ * invMass2
+
+	return true, true
+}
+
+func penguinColliderFromPenguin(player entities.Penguin) orientedCollider {
+	return makePenguinCollider(player.Position, player.Direction)
+}
+
+func makePenguinCollider(position entities.Position, direction float64) orientedCollider {
+	rad := direction * (math.Pi / 180)
+	forward := velocityVector{
+		X: math.Cos(rad),
+		Z: math.Sin(rad),
+	}
+	right := velocityVector{
+		X: -forward.Z,
+		Z: forward.X,
+	}
+	return orientedCollider{
+		center: entities.Position{
+			X: position.X + forward.X*penguinColliderForwardOffset,
+			Z: position.Z + forward.Z*penguinColliderForwardOffset,
+		},
+		right:     right,
+		forward:   forward,
+		halfWidth: penguinColliderHalfWidth,
+		halfDepth: penguinColliderHalfDepth,
+	}
+}
+
+func (c orientedCollider) axisAlignedExtents() (float64, float64) {
+	extentX := math.Abs(c.right.X)*c.halfWidth + math.Abs(c.forward.X)*c.halfDepth
+	extentZ := math.Abs(c.right.Z)*c.halfWidth + math.Abs(c.forward.Z)*c.halfDepth
+	return extentX, extentZ
+}
+
+func colliderContactNormal(a, b orientedCollider) (float64, float64, float64, bool) {
+	axes := [...]velocityVector{
+		a.right,
+		a.forward,
+		b.right,
+		b.forward,
+	}
+	centerDelta := velocityVector{
+		X: b.center.X - a.center.X,
+		Z: b.center.Z - a.center.Z,
+	}
+
+	bestOverlap := math.Inf(1)
+	bestAxis := velocityVector{}
+	for _, axis := range axes {
+		overlap := projectionOverlap(a, b, centerDelta, axis)
+		if overlap <= 0 {
+			return 0, 0, 0, false
+		}
+		if overlap < bestOverlap {
+			bestOverlap = overlap
+			bestAxis = axis
+		}
+	}
+
+	if dot(centerDelta, bestAxis) < 0 {
+		bestAxis.X = -bestAxis.X
+		bestAxis.Z = -bestAxis.Z
+	}
+
+	return bestAxis.X, bestAxis.Z, bestOverlap, true
+}
+
+func projectionOverlap(a, b orientedCollider, centerDelta, axis velocityVector) float64 {
+	distance := math.Abs(dot(centerDelta, axis))
+	reach := projectionRadius(a, axis) + projectionRadius(b, axis)
+	return reach - distance
+}
+
+func projectionRadius(c orientedCollider, axis velocityVector) float64 {
+	return c.halfWidth*math.Abs(dot(c.right, axis)) +
+		c.halfDepth*math.Abs(dot(c.forward, axis))
+}
+
+func dot(a, b velocityVector) float64 {
+	return a.X*b.X + a.Z*b.Z
+}
+
+func inverseMass(mass float64) float64 {
+	if mass <= 0 {
+		return 0
+	}
+	return 1 / mass
 }
 
 func (gs *GameState) shrinkMap() {
