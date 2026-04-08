@@ -154,34 +154,57 @@ jobs:
       - name: Create backend .env from cluster secret
         run: |
           set -euo pipefail
-          SECRET_NAME="knockout-server-env"
+          SECRET_NAME="${SECRET_NAME:-knockout-server-env}"
+          SECRET_NAMESPACE="${SECRET_NAMESPACE:-default}"
+          REDIS_KEY="${REDIS_KEY:-REDIS_URL}"
+          JWT_KEY="${JWT_KEY:-JWT_SECRET}"
+          DATABASE_KEY="${DATABASE_KEY:-DATABASE_URL}"
+          ENV_KEY="${ENV_KEY:-ENV}"
 
-          REDIS_URL_B64=$(kubectl get secret "$SECRET_NAME" -o jsonpath="{.data.REDIS_URL}")
-          JWT_SECRET_B64=$(kubectl get secret "$SECRET_NAME" -o jsonpath="{.data.JWT_SECRET}")
-          DATABASE_URL_B64=$(kubectl get secret "$SECRET_NAME" -o jsonpath="{.data.DATABASE_URL}")
+          SECRET_JSON=$(kubectl get secret "$SECRET_NAME" -n "$SECRET_NAMESPACE" -o json)
+          export SECRET_JSON REDIS_KEY JWT_KEY DATABASE_KEY ENV_KEY
 
-          if [ -z "$REDIS_URL_B64" ] || [ -z "$JWT_SECRET_B64" ] || [ -z "$DATABASE_URL_B64" ]; then
-            echo "::error::Missing REDIS_URL, JWT_SECRET, or DATABASE_URL in secret $SECRET_NAME"
-            exit 1
-          fi
-
-          export REDIS_URL_B64 JWT_SECRET_B64 DATABASE_URL_B64
           python - <<'PY'
-          import base64, os, pathlib
+          import base64, json, os, pathlib, sys
 
-          def decode(val: str) -> str:
+          secret = json.loads(os.environ["SECRET_JSON"])
+          data = secret.get("data", {})
+
+          def decode(key: str) -> str:
+              val = data.get(key)
+              if not val:
+                  return ""
               return base64.b64decode(val).decode("utf-8")
 
-          redis_url = decode(os.environ["REDIS_URL_B64"])
-          jwt_secret = decode(os.environ["JWT_SECRET_B64"])
-          database_url = decode(os.environ["DATABASE_URL_B64"])
+          redis_key = os.environ["REDIS_KEY"]
+          jwt_key = os.environ["JWT_KEY"]
+          db_key = os.environ["DATABASE_KEY"]
+          env_key = os.environ["ENV_KEY"]
+
+          redis_url = decode(redis_key)
+          jwt_secret = decode(jwt_key)
+          database_url = decode(db_key)
+          env_value = decode(env_key)
+
+          if not redis_url or not jwt_secret or not database_url or not env_value:
+              keys = ", ".join(sorted(data.keys()))
+              print(
+                  f"::error::Missing required key(s) in secret. "
+                  f"Looking for {redis_key}, {jwt_key}, {db_key}, {env_key}. "
+                  f"Available keys: {keys}"
+              )
+              sys.exit(1)
+
+          if env_value != "PROD":
+              print(f"::error::ENV must be PROD, got {env_value}")
+              sys.exit(1)
 
           env_path = pathlib.Path("services/server/.env")
           env_path.write_text(
               f'REDIS_URL="{redis_url}"\n'
               f'JWT_SECRET="{jwt_secret}"\n'
               f'DATABASE_URL="{database_url}"\n'
-              f'ENV="PROD"\n'
+              f'ENV="{env_value}"\n'
           )
           print(f"Wrote {env_path}")
           PY
