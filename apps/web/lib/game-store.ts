@@ -90,6 +90,20 @@ function resolvePhaseFromGameState(
   return "playing";
 }
 
+function deriveWinnerId(gs: GameState | null): string | null {
+  if (!gs) return null;
+  for (const [id, player] of Object.entries(gs.players)) {
+    if (player.eliminated === 0) return id;
+  }
+  return null;
+}
+
+function shouldEndGame(gs: GameState | null): boolean {
+  if (!gs || !gs.started) return false;
+  const alive = Object.values(gs.players).filter((p) => p.eliminated === 0);
+  return alive.length <= 1;
+}
+
 const initialState = {
   gameId: null,
   playerId: null,
@@ -125,12 +139,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }
     }
     const pid = get().playerId;
+    const shouldEnd = shouldEndGame(gs);
+    const derivedWinnerId = shouldEnd ? deriveWinnerId(gs) : null;
     set({
       gameState: gs,
       currentRound: gs?.current_round ?? 1,
       animatedPositions: positions,
       isHost: !!(pid && gs?.host_id === pid),
-      phase: resolvePhaseFromGameState(gs, get().phase),
+      winnerId: shouldEnd ? derivedWinnerId : null,
+      phase: shouldEnd ? "ended" : resolvePhaseFromGameState(gs, get().phase),
     });
   },
   setPhase: (phase) => set({ phase }),
@@ -252,13 +269,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }
     }
     const currentPhase = get().phase;
+    const shouldEnd = shouldEndGame(gs);
+    const derivedWinnerId = shouldEnd ? deriveWinnerId(gs) : null;
     set({
       gameState: gs,
       animatedPositions: positions,
-      phase:
-        currentPhase === "countdown" ||
-        currentPhase === "animating" ||
-        currentPhase === "ended"
+      winnerId: shouldEnd
+        ? derivedWinnerId
+        : currentPhase === "ended"
+          ? get().winnerId
+          : null,
+      phase: shouldEnd
+        ? "ended"
+        : currentPhase === "countdown" ||
+            currentPhase === "animating" ||
+            currentPhase === "ended"
           ? currentPhase
           : resolvePhaseFromGameState(gs, currentPhase),
     });

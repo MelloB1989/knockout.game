@@ -662,6 +662,10 @@ func WSHandler(c *websocket.Conn) {
 					})
 					return
 				}
+				_ = writeJSON(outgoing{
+					Event: repository.PlayersPositionUpdate,
+					Data:  maskGameStateForPlayer(game.GameState, playerId),
+				})
 				if err := publishPlayersPositionUpdate(game); err != nil {
 					writeJSON(outgoing{
 						Event: repository.ErrorEvent,
