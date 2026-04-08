@@ -226,7 +226,7 @@ jobs:
           DB_PASSWORD="$DB_PASSWORD" \
           DB_NAME="$DB_NAME" \
           DB_SSL="$DB_SSL" \
-          (cd database && bunx drizzle-kit migrate)
+          bun run db:push
 
           kill $PF_PID 2>/dev/null || true
           kubectl delete pod $TUNNEL_POD --ignore-not-found=true
