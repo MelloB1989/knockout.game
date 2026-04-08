@@ -7,6 +7,7 @@ import type {
   RoundMovesPayload,
   PlayerEliminatedPayload,
   GameEndedPayload,
+  RematchCreatedPayload,
 } from "./types";
 
 export type GamePhase =
@@ -42,6 +43,9 @@ interface GameStore {
   // Elimination & end
   eliminatedThisRound: { playerId: string; eliminatedBy?: string }[];
   winnerId: string | null;
+  rematchGameId: string | null;
+  rematchGameState: GameState | null;
+  rematchRequested: boolean;
 
   // Animated positions (for smooth interpolation)
   animatedPositions: Record<string, { x: number; z: number }>;
@@ -58,6 +62,7 @@ interface GameStore {
   handlePlayerJoined: (player: Penguin) => void;
   handlePlayerEliminated: (payload: PlayerEliminatedPayload) => void;
   handleGameEnded: (payload: GameEndedPayload, gs: GameState | null) => void;
+  handleRematchCreated: (payload: RematchCreatedPayload) => void;
   handleMoveAck: () => void;
   handlePositionUpdate: (gs: GameState) => void;
 
@@ -69,6 +74,8 @@ interface GameStore {
   updateAnimatedPositions: (
     positions: Record<string, { x: number; z: number }>,
   ) => void;
+  setRematchRequested: (requested: boolean) => void;
+  clearRematch: () => void;
 
   reset: () => void;
 }
@@ -99,6 +106,9 @@ const initialState = {
   aimPower: 6,
   eliminatedThisRound: [] as { playerId: string; eliminatedBy?: string }[],
   winnerId: null,
+  rematchGameId: null,
+  rematchGameState: null,
+  rematchRequested: false,
   animatedPositions: {},
 };
 
@@ -157,9 +167,28 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   handleRoundMoves: (payload) => {
+    const gs = get().gameState;
+    const nextGameState = gs
+      ? {
+          ...gs,
+          players: Object.fromEntries(
+            Object.entries(gs.players).map(([id, player]) => [
+              id,
+              payload.moves[id]
+                ? {
+                    ...player,
+                    direction: payload.moves[id]!.direction,
+                    public_direction: payload.moves[id]!.direction,
+                  }
+                : player,
+            ]),
+          ),
+        }
+      : null;
     set({
       roundMoves: payload.moves,
       phase: "animating",
+      gameState: nextGameState ?? gs,
     });
   },
 
@@ -187,6 +216,25 @@ export const useGameStore = create<GameStore>((set, get) => ({
       winnerId: payload.winner_id ?? null,
       phase: "ended",
       gameState: gs ?? get().gameState,
+    });
+  },
+
+  handleRematchCreated: (payload) => {
+    const pid = get().playerId;
+    set({
+      rematchGameId: payload.game_id,
+      rematchGameState: payload.game_state,
+      rematchRequested: false,
+      gameId: payload.game_id,
+      gameState: payload.game_state,
+      currentRound: payload.game_state?.current_round ?? 1,
+      phase: resolvePhaseFromGameState(payload.game_state, "idle"),
+      winnerId: null,
+      roundMoves: null,
+      pendingMove: null,
+      moveSubmitted: false,
+      eliminatedThisRound: [],
+      isHost: !!(pid && payload.game_state?.host_id === pid),
     });
   },
 
@@ -228,6 +276,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   updateAnimatedPositions: (positions) => set({ animatedPositions: positions }),
+
+  setRematchRequested: (requested) => set({ rematchRequested: requested }),
+  clearRematch: () =>
+    set({
+      rematchGameId: null,
+      rematchGameState: null,
+      rematchRequested: false,
+    }),
 
   reset: () => set(initialState),
 }));

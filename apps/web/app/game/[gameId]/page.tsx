@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, use } from "react";
+import { useEffect, useRef, use, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import { useAuthStore } from "@/lib/auth-store";
@@ -8,8 +8,10 @@ import { useGameStore } from "@/lib/game-store";
 import {
   connectToGame,
   disconnectFromGame,
+  getState as wsGetState,
   registerPlayer,
   startGame as wsStartGame,
+  playAgain as wsPlayAgain,
 } from "@/lib/ws";
 import GameControls from "@/components/game/GameControls";
 import GameHUD from "@/components/game/GameHUD";
@@ -33,14 +35,71 @@ export default function GamePage({
 }) {
   const { gameId } = use(params);
   const router = useRouter();
-  const { token, playerId, playerSecret, isReady, username } = useAuthStore();
-  const { phase, gameState, setGameId, setPlayerId, setIsHost, reset } = useGameStore();
+  const {
+    token,
+    playerId,
+    playerSecret,
+    selectedSkin,
+    isReady,
+    hasHydrated,
+    restorePersistedSession,
+  } = useAuthStore();
+  const {
+    phase,
+    gameState,
+    rematchGameId,
+    setGameId,
+    setPlayerId,
+    clearRematch,
+    setRematchRequested,
+  } = useGameStore();
   const connectedRef = useRef(false);
+  const rejoinRetryRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryCountRef = useRef(0);
+
+  const queuedSkin = useMemo(
+    () => selectedSkin || "default",
+    [selectedSkin],
+  );
+
+  const queueRejoin = () => {
+    if (!playerId) return;
+    registerPlayer({
+      id: playerId,
+      skin: queuedSkin,
+      player_secret: playerSecret || "",
+      position: { x: 0, z: 0 },
+    });
+  };
 
   useEffect(() => {
-    if (!isReady || !token || !playerId) {
-      router.replace("/");
+    if (!hasHydrated || !isReady || !token || !playerId || !playerSecret) {
+      const restored = restorePersistedSession();
+      const restoredState = useAuthStore.getState();
+
+      if (redirectTimerRef.current) {
+        clearTimeout(redirectTimerRef.current);
+        redirectTimerRef.current = null;
+      }
+
+      if (
+        !restored &&
+        restoredState.hasHydrated &&
+        (!restoredState.token ||
+          !restoredState.playerId ||
+          !restoredState.playerSecret)
+      ) {
+        redirectTimerRef.current = setTimeout(() => {
+          router.replace("/");
+        }, 1200);
+      }
       return;
+    }
+
+    if (redirectTimerRef.current) {
+      clearTimeout(redirectTimerRef.current);
+      redirectTimerRef.current = null;
     }
 
     setGameId(gameId);
@@ -50,45 +109,93 @@ export default function GamePage({
     if (connectedRef.current) return;
     connectedRef.current = true;
 
-    const skin =
-      (typeof window !== "undefined" &&
-        sessionStorage.getItem("selectedSkin")) ||
-      "default";
-
-    // Queue registration before connecting — ws.ts will send it on open
-    registerPlayer({
-      id: playerId,
-      skin,
-      player_secret: playerSecret || "",
-      position: { x: 0, z: 0 },
-    });
+    // Queue registration before connecting — ws.ts will send it on open.
+    queueRejoin();
 
     // Connect websocket (will register + get_state on open)
     connectToGame(gameId, token);
 
+    // Keep nudging rejoin/state requests until the first game state lands.
+    retryCountRef.current = 0;
+    rejoinRetryRef.current = setInterval(() => {
+      if (useGameStore.getState().gameState) {
+        if (rejoinRetryRef.current) {
+          clearInterval(rejoinRetryRef.current);
+          rejoinRetryRef.current = null;
+        }
+        return;
+      }
+
+      retryCountRef.current += 1;
+      queueRejoin();
+      wsGetState();
+
+      if (retryCountRef.current >= 12 && rejoinRetryRef.current) {
+        clearInterval(rejoinRetryRef.current);
+        rejoinRetryRef.current = null;
+      }
+    }, 1200);
+
     return () => {
+      if (rejoinRetryRef.current) {
+        clearInterval(rejoinRetryRef.current);
+        rejoinRetryRef.current = null;
+      }
+      if (redirectTimerRef.current) {
+        clearTimeout(redirectTimerRef.current);
+        redirectTimerRef.current = null;
+      }
       disconnectFromGame();
       connectedRef.current = false;
     };
-  }, [gameId, isReady, token, playerId, playerSecret, router, setGameId]);
+  }, [
+    gameId,
+    hasHydrated,
+    isReady,
+    token,
+    playerId,
+    playerSecret,
+    queuedSkin,
+    router,
+    restorePersistedSession,
+    setGameId,
+    setPlayerId,
+  ]);
+
+  useEffect(() => {
+    if (gameState && rejoinRetryRef.current) {
+      clearInterval(rejoinRetryRef.current);
+      rejoinRetryRef.current = null;
+    }
+  }, [gameState]);
+
+  useEffect(() => {
+    if (!rematchGameId || rematchGameId === gameId) return;
+    router.replace(`/game/${rematchGameId}`);
+    clearRematch();
+  }, [clearRematch, gameId, rematchGameId, router]);
 
   const handleStart = () => {
     wsStartGame();
   };
 
   const handlePlayAgain = () => {
-    reset();
-    router.push("/");
+    setRematchRequested(true);
+    wsPlayAgain();
   };
 
-  if (!isReady) return null;
+  const showRestoreOverlay = !hasHydrated || !isReady || phase === "idle";
 
   return (
     <div className="fixed inset-0 bg-[var(--bg-primary)]">
-      {/* Loading state while waiting for game state */}
-      {phase === "idle" && (
+      {showRestoreOverlay && (
         <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-[var(--bg-primary)]">
-          <div className="text-2xl font-bold text-[var(--text-warm)] mb-4 font-[family-name:var(--font-fredoka)]">Connecting...</div>
+          <div className="text-2xl font-bold text-[var(--text-warm)] mb-3 font-[family-name:var(--font-fredoka)]">
+            {hasHydrated && isReady ? "Restoring match..." : "Restoring session..."}
+          </div>
+          <div className="text-sm text-[var(--text-dim)] mb-4 font-[family-name:var(--font-geist-sans)]">
+            Rejoining game {gameId}
+          </div>
           <div className="flex gap-1.5">
             {[0, 1, 2].map((i) => (
               <div

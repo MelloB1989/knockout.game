@@ -1,9 +1,9 @@
 import { API_BASE } from "./constants";
-import type { MapConfig } from "./types";
+import type { GameResult, MapConfig } from "./types";
 
 async function apiFetch<T>(
   path: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
 ): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
@@ -34,11 +34,16 @@ export async function createGame(
     skin: string;
     position?: { x: number; z: number };
     wait_time_seconds?: number;
-  }
+  },
 ): Promise<{ game_id: string; host_id: string; game_state: unknown }> {
   return apiFetch("/v1/game/create", {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
   });
+}
+
+export async function getLatestGames(limit = 12): Promise<GameResult[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  return apiFetch(`/v1/game/latest?${params.toString()}`);
 }

@@ -26,3 +26,22 @@ func SaveGame(game Games) error {
 
 	return gamesORM.Insert(&game)
 }
+
+func GetLatestGames(limit int) ([]Games, error) {
+	gamesORM := orm.Load(&Games{})
+	defer gamesORM.Close()
+
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	var games []Games
+	query := "SELECT * FROM games ORDER BY played_at DESC LIMIT $1"
+	if err := gamesORM.QueryRaw(query, limit).Scan(&games); err != nil {
+		return nil, err
+	}
+	return games, nil
+}

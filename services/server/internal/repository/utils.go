@@ -77,6 +77,21 @@ func LoadGame(id string) (*Game, error) {
 	return &game, nil
 }
 
+func LoadGameFresh(id string) (*Game, error) {
+	redis := redisclient.Client()
+	data, err := redis.Get(ctx, id).Result()
+	if err != nil {
+		return nil, err
+	}
+	var game Game
+	if err := json.Unmarshal([]byte(data), &game); err != nil {
+		return nil, err
+	}
+	game.rc = redis
+	rememberLiveGame(&game)
+	return &game, nil
+}
+
 func (g *Game) ensureRedis() {
 	if g.rc == nil {
 		g.rc = redisclient.Client()

@@ -126,16 +126,23 @@ const MAP_ENV: Record<string, string> = {
 
 export default function CreatePage() {
   const router = useRouter();
-  const { token, isReady } = useAuthStore();
+  const {
+    token,
+    isReady,
+    hasHydrated,
+    selectedSkin: persistedSkin,
+    setSelectedSkin: persistSelectedSkin,
+  } = useAuthStore();
   const { setGameId, setGameState, setIsHost } = useGameStore();
 
   const [maps, setMaps] = useState<MapConfig[]>([]);
   const [selectedMap, setSelectedMap] = useState("");
-  const [selectedSkin, setSelectedSkin] = useState("default");
+  const [selectedSkin, setSelectedSkin] = useState(persistedSkin || "default");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
+    if (!hasHydrated) return;
     if (!isReady) {
       router.replace("/");
       return;
@@ -146,7 +153,12 @@ export default function CreatePage() {
         if (m.length > 0 && m[0]) setSelectedMap(m[0].id);
       })
       .catch(() => setError("Failed to load maps"));
-  }, [isReady, router]);
+  }, [hasHydrated, isReady, router]);
+
+  useEffect(() => {
+    if (!hasHydrated) return;
+    setSelectedSkin(persistedSkin || "default");
+  }, [hasHydrated, persistedSkin]);
 
   const handleCreate = async () => {
     if (!token || !selectedMap) return;
@@ -158,7 +170,7 @@ export default function CreatePage() {
         skin: selectedSkin,
         wait_time_seconds: 10,
       });
-      sessionStorage.setItem("selectedSkin", selectedSkin);
+      persistSelectedSkin(selectedSkin);
       setGameId(res.game_id);
       setGameState(res.game_state as GameState);
       setIsHost(true);
@@ -248,7 +260,10 @@ export default function CreatePage() {
                   return (
                     <motion.button
                       key={skin}
-                      onClick={() => setSelectedSkin(skin)}
+                      onClick={() => {
+                        setSelectedSkin(skin);
+                        persistSelectedSkin(skin);
+                      }}
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
                       className={`relative aspect-square rounded-xl border-2 flex flex-col items-center justify-center gap-1 transition-all ${

@@ -8,7 +8,8 @@ interface GameOverOverlayProps {
 }
 
 export default function GameOverOverlay({ onPlayAgain }: GameOverOverlayProps) {
-  const { winnerId, gameState, currentRound } = useGameStore();
+  const { winnerId, gameState, currentRound, rematchRequested } =
+    useGameStore();
   const { playerId } = useAuthStore();
 
   const isWinner = winnerId === playerId;
@@ -20,27 +21,31 @@ export default function GameOverOverlay({ onPlayAgain }: GameOverOverlayProps) {
   const sortedPlayers = [...players].sort((a, b) => {
     if (a.eliminated === 0 && b.eliminated !== 0) return -1;
     if (b.eliminated === 0 && a.eliminated !== 0) return 1;
-    if (a.eliminated === 0 && b.eliminated === 0) return (b.score ?? 0) - (a.score ?? 0);
-    if ((b.score ?? 0) !== (a.score ?? 0)) return (b.score ?? 0) - (a.score ?? 0);
+    if (a.eliminated === 0 && b.eliminated === 0)
+      return (b.score ?? 0) - (a.score ?? 0);
+    if ((b.score ?? 0) !== (a.score ?? 0))
+      return (b.score ?? 0) - (a.score ?? 0);
     return b.eliminated - a.eliminated;
   });
 
   return (
     <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-md">
-      <div className="bg-[var(--bg-card)]/95 border border-[var(--border-warm)] rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl text-center">
+      <div className="bg-[var(--bg-card)]/95 border border-[var(--border-warm)] rounded-none p-5 max-w-sm w-full mx-4 shadow-2xl text-center">
         {/* Result header */}
         {isWinner ? (
           <>
-            <div className="text-6xl mb-4">&#x1F3C6;</div>
-            <h1 className="text-4xl font-[family-name:var(--font-bungee)] text-gradient-warm mb-2">
+            <div className="text-5xl mb-3">&#x1F3C6;</div>
+            <h1 className="text-3xl font-[family-name:var(--font-bungee)] text-gradient-warm mb-2">
               VICTORY!
             </h1>
-            <p className="text-[var(--text-muted)] font-[family-name:var(--font-fredoka)]">You knocked them all out!</p>
+            <p className="text-[var(--text-muted)] font-[family-name:var(--font-fredoka)]">
+              You knocked them all out!
+            </p>
           </>
         ) : winnerId ? (
           <>
-            <div className="text-6xl mb-4">&#x1F4A5;</div>
-            <h1 className="text-4xl font-[family-name:var(--font-bungee)] bg-gradient-to-r from-[var(--accent-red)] to-[var(--accent-orange)] bg-clip-text text-transparent mb-2">
+            <div className="text-5xl mb-3">&#x1F4A5;</div>
+            <h1 className="text-3xl font-[family-name:var(--font-bungee)] bg-gradient-to-r from-[var(--accent-red)] to-[var(--accent-orange)] bg-clip-text text-transparent mb-2">
               KNOCKED OUT
             </h1>
             <p className="text-[var(--text-muted)] font-[family-name:var(--font-fredoka)]">
@@ -49,11 +54,13 @@ export default function GameOverOverlay({ onPlayAgain }: GameOverOverlayProps) {
           </>
         ) : (
           <>
-            <div className="text-6xl mb-4">&#x1F3AE;</div>
-            <h1 className="text-4xl font-[family-name:var(--font-bungee)] text-[var(--text-warm)] mb-2">
+            <div className="text-5xl mb-3">&#x1F3AE;</div>
+            <h1 className="text-3xl font-[family-name:var(--font-bungee)] text-[var(--text-warm)] mb-2">
               GAME OVER
             </h1>
-            <p className="text-[var(--text-muted)] font-[family-name:var(--font-fredoka)]">No winner — everyone got knocked out!</p>
+            <p className="text-[var(--text-muted)] font-[family-name:var(--font-fredoka)]">
+              No winner — everyone got knocked out!
+            </p>
           </>
         )}
 
@@ -66,7 +73,7 @@ export default function GameOverOverlay({ onPlayAgain }: GameOverOverlayProps) {
             {sortedPlayers.map((p, i) => (
               <div
                 key={p.id}
-                className={`flex items-center gap-3 p-2.5 rounded-lg text-sm ${
+                className={`flex items-center gap-3 p-2 rounded-none text-sm ${
                   p.id === playerId
                     ? "bg-[var(--accent-orange)]/10 border border-[var(--accent-orange)]/20"
                     : "bg-white/5"
@@ -95,9 +102,10 @@ export default function GameOverOverlay({ onPlayAgain }: GameOverOverlayProps) {
 
         <button
           onClick={onPlayAgain}
-          className="game-btn-primary w-full font-[family-name:var(--font-fredoka)] text-lg"
+          disabled={rematchRequested}
+          className="game-btn-primary w-full rounded-none font-[family-name:var(--font-fredoka)] text-base disabled:opacity-60 disabled:cursor-wait"
         >
-          Play Again
+          {rematchRequested ? "Creating Rematch..." : "Play Again"}
         </button>
       </div>
     </div>

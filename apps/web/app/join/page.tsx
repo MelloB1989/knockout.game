@@ -25,15 +25,26 @@ const SKIN_DATA: Record<string, { name: string; gradient: string; emoji: string;
 
 export default function JoinPage() {
   const router = useRouter();
-  const { isReady } = useAuthStore();
+  const {
+    isReady,
+    hasHydrated,
+    selectedSkin: persistedSkin,
+    setSelectedSkin: persistSelectedSkin,
+  } = useAuthStore();
   const { setGameId, setIsHost } = useGameStore();
 
   const [gameCode, setGameCode] = useState("");
-  const [selectedSkin, setSelectedSkin] = useState("default");
+  const [selectedSkin, setSelectedSkin] = useState(persistedSkin || "default");
 
   useEffect(() => {
+    if (!hasHydrated) return;
     if (!isReady) router.replace("/");
-  }, [isReady, router]);
+  }, [hasHydrated, isReady, router]);
+
+  useEffect(() => {
+    if (!hasHydrated) return;
+    setSelectedSkin(persistedSkin || "default");
+  }, [hasHydrated, persistedSkin]);
 
   const skinKeys = Object.keys(ALL_SKINS);
   const skinInfo = SKIN_DATA[selectedSkin] ?? SKIN_DATA["default"]!;
@@ -42,7 +53,7 @@ export default function JoinPage() {
     if (!gameCode.trim()) return;
     setGameId(gameCode.trim());
     setIsHost(false);
-    sessionStorage.setItem("selectedSkin", selectedSkin);
+    persistSelectedSkin(selectedSkin);
     router.push(`/game/${gameCode.trim()}`);
   };
 
@@ -137,7 +148,10 @@ export default function JoinPage() {
                 return (
                   <motion.button
                     key={skin}
-                    onClick={() => setSelectedSkin(skin)}
+                    onClick={() => {
+                      setSelectedSkin(skin);
+                      persistSelectedSkin(skin);
+                    }}
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
                     className={`relative aspect-square rounded-xl border-2 flex flex-col items-center justify-center gap-1 transition-all ${

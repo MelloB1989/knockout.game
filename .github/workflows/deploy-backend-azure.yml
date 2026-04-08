@@ -1,0 +1,276 @@
+name: Deploy Knockout Backend to Azure AKS
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: knockout-backend-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: knockout-server
+  WORKING_DIR: services/server
+  BUILD_CACHE_DIR: /mnt/buildx-cache/primary
+  BUILD_CACHE_DIR_NEW: /mnt/buildx-cache/next
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Preflight disk cleanup
+        run: |
+          echo "Disk before preflight cleanup:"
+          df -h /
+          AVAIL_GB=$(df --output=avail / | tail -1 | awk '{printf "%.0f", $1/1024/1024}')
+          echo "Available disk space: ${AVAIL_GB}GB"
+
+          if [ "$AVAIL_GB" -lt 15 ]; then
+            echo "Low disk detected, pruning stale Docker data older than 7 days"
+            docker builder prune -af --filter "until=168h" 2>/dev/null || true
+            docker image prune -af --filter "until=168h" 2>/dev/null || true
+          else
+            echo "Sufficient disk available, preserving Docker build cache"
+          fi
+
+          echo "Disk after preflight cleanup:"
+          df -h /
+
+      - name: Verify sufficient disk space
+        run: |
+          AVAIL_GB=$(df --output=avail / | tail -1 | awk '{printf "%.0f", $1/1024/1024}')
+          echo "Available disk space: ${AVAIL_GB}GB"
+          if [ "$AVAIL_GB" -lt 12 ]; then
+            echo "::error::Insufficient disk space (${AVAIL_GB}GB < 12GB minimum). Cannot proceed with build."
+            exit 1
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Get version
+        id: version
+        run: |
+          SHA_SHORT=$(git rev-parse --short HEAD)
+          echo "sha_short=$SHA_SHORT" >> $GITHUB_OUTPUT
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Discover Azure resources
+        id: azure
+        run: |
+          python - <<'PY'
+          import json, subprocess, os
+
+          def first(cmd, label):
+              data = json.loads(subprocess.check_output(cmd))
+              if not data:
+                  raise SystemExit(f"No {label} found via az cli")
+              return data[0]
+
+          aks = first(["az", "aks", "list", "-o", "json"], "AKS clusters")
+          acr = first(["az", "acr", "list", "-o", "json"], "ACR registries")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"aks_name={aks['name']}\n")
+              f.write(f"aks_rg={aks['resourceGroup']}\n")
+              f.write(f"acr_name={acr['name']}\n")
+              f.write(f"acr_login_server={acr['loginServer']}\n")
+          PY
+
+      - name: Login to ACR
+        run: |
+          az acr login --name ${{ steps.azure.outputs.acr_name }}
+
+      - name: Install kubectl and kubelogin
+        run: |
+          set -euo pipefail
+          KUBECTL_VERSION="v1.32.3"
+          KUBELOGIN_VERSION="v0.1.7"
+          ARCH="amd64"
+          MAX_RETRIES=3
+
+          install_kubectl() {
+            for i in $(seq 1 $MAX_RETRIES); do
+              echo "Installing kubectl ${KUBECTL_VERSION} (attempt $i/$MAX_RETRIES)..."
+              if curl -fLo /tmp/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl"; then
+                sudo install -o root -g root -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+                return 0
+              fi
+              [ "$i" -eq "$MAX_RETRIES" ] && return 1
+              sleep 10
+            done
+          }
+
+          install_kubelogin() {
+            for i in $(seq 1 $MAX_RETRIES); do
+              echo "Installing kubelogin ${KUBELOGIN_VERSION} (attempt $i/$MAX_RETRIES)..."
+              if curl -fLo /tmp/kubelogin.zip "https://github.com/Azure/kubelogin/releases/download/${KUBELOGIN_VERSION}/kubelogin-linux-${ARCH}.zip"; then
+                TMP_DIR=$(mktemp -d /tmp/kubelogin.XXXXXX)
+                unzip -o /tmp/kubelogin.zip -d "$TMP_DIR" >/dev/null
+                sudo install -o root -g root -m 0755 "$TMP_DIR/bin/linux_${ARCH}/kubelogin" /usr/local/bin/kubelogin
+                rm -rf "$TMP_DIR"
+                return 0
+              fi
+              [ "$i" -eq "$MAX_RETRIES" ] && return 1
+              sleep 10
+            done
+          }
+
+          CURRENT_KUBECTL=$(kubectl version --client -o yaml 2>/dev/null | awk '/gitVersion:/ {print $2}' || true)
+          if [ "$CURRENT_KUBECTL" != "$KUBECTL_VERSION" ]; then
+            install_kubectl
+          else
+            echo "kubectl ${KUBECTL_VERSION} already installed"
+          fi
+
+          CURRENT_KUBELOGIN=$(kubelogin --version 2>/dev/null | awk 'NR==1 {print $3}' || true)
+          if [ "$CURRENT_KUBELOGIN" != "$KUBELOGIN_VERSION" ]; then
+            install_kubelogin
+          else
+            echo "kubelogin ${KUBELOGIN_VERSION} already installed"
+          fi
+
+          kubectl version --client
+          kubelogin --version
+
+      - name: Setup kubeconfig
+        run: |
+          az aks get-credentials --resource-group ${{ steps.azure.outputs.aks_rg }} --name ${{ steps.azure.outputs.aks_name }} --overwrite-existing
+          kubelogin convert-kubeconfig -l azurecli
+          kubectl cluster-info
+
+      - name: Prepare Buildx cache
+        run: |
+          mkdir -p "${{ env.BUILD_CACHE_DIR }}" "${{ env.BUILD_CACHE_DIR_NEW }}"
+
+      - name: Build and Push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/server/Dockerfile
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.azure.outputs.acr_login_server }}/${{ env.IMAGE_NAME }}:latest
+            ${{ steps.azure.outputs.acr_login_server }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.sha_short }}
+          build-args: |
+            GO_VERSION=1.24.4
+          cache-from: type=local,src=${{ env.BUILD_CACHE_DIR }}
+          cache-to: type=local,dest=${{ env.BUILD_CACHE_DIR_NEW }},mode=max
+
+      - name: Rotate Buildx cache
+        run: |
+          rm -rf "${{ env.BUILD_CACHE_DIR }}"
+          mv "${{ env.BUILD_CACHE_DIR_NEW }}" "${{ env.BUILD_CACHE_DIR }}"
+
+      - name: Run Database Migrations
+        run: |
+          set -euo pipefail
+          set -a
+          source services/server/.env
+          set +a
+
+          python - <<'PY'
+          import os
+          from urllib.parse import urlparse, parse_qs, unquote
+
+          url = os.environ["DATABASE_URL"]
+          u = urlparse(url)
+          q = parse_qs(u.query)
+          sslmode = (q.get("sslmode", [""])[0] or "").lower()
+          db_ssl = "true" if sslmode not in ("", "disable", "none") else "false"
+
+          with open("/tmp/db.env", "w") as f:
+              f.write(f"DB_HOST={u.hostname or ''}\n")
+              f.write(f"DB_PORT={u.port or 5432}\n")
+              f.write(f"DB_USER={unquote(u.username or '')}\n")
+              f.write(f"DB_PASSWORD={unquote(u.password or '')}\n")
+              f.write(f"DB_NAME={u.path.lstrip('/')}\n")
+              f.write(f"DB_SSL={db_ssl}\n")
+          PY
+
+          set -a
+          source /tmp/db.env
+          set +a
+
+          ORIG_DB_HOST="$DB_HOST"
+          ORIG_DB_PORT="$DB_PORT"
+
+          TUNNEL_POD="db-migrate-tunnel-$$"
+          kubectl run "$TUNNEL_POD" \
+            --image=alpine/socat:latest \
+            --restart=Never \
+            --labels=app=db-tunnel \
+            -- -d -d TCP-LISTEN:5432,fork,reuseaddr TCP:${ORIG_DB_HOST}:${ORIG_DB_PORT}
+
+          kubectl wait --for=condition=Ready pod/$TUNNEL_POD --timeout=60s
+          kubectl port-forward pod/$TUNNEL_POD 15432:5432 &
+          PF_PID=$!
+          sleep 5
+
+          if ! command -v bun >/dev/null 2>&1; then
+            curl -fsSL https://bun.sh/install | bash
+          fi
+          export BUN_INSTALL="$HOME/.bun"
+          export PATH="$BUN_INSTALL/bin:$PATH"
+
+          bun install --frozen-lockfile
+
+          DB_HOST=127.0.0.1 \
+          DB_PORT=15432 \
+          DB_USER="$DB_USER" \
+          DB_PASSWORD="$DB_PASSWORD" \
+          DB_NAME="$DB_NAME" \
+          DB_SSL="$DB_SSL" \
+          (cd database && bunx drizzle-kit migrate)
+
+          kill $PF_PID 2>/dev/null || true
+          kubectl delete pod $TUNNEL_POD --ignore-not-found=true
+
+      - name: Deploy to Production
+        run: |
+          cd ${{ env.WORKING_DIR }}
+          IMAGE_TAG="${{ steps.version.outputs.sha_short }}"
+
+          kubectl apply -f k8s/azure/prod/service.yaml
+          kubectl apply -f k8s/azure/prod/ingress.yaml
+
+          sed "s|lyznai.azurecr.io/knockout-server:latest|${{ steps.azure.outputs.acr_login_server }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}|g" \
+            k8s/azure/prod/deployment.yaml | kubectl apply -f -
+
+          kubectl rollout restart deployment/knockout-server -n default
+          kubectl rollout status deployment/knockout-server -n default --timeout=300s
+
+      - name: Post-deploy cleanup
+        if: always()
+        run: |
+          SHA_SHORT="${{ steps.version.outputs.sha_short }}"
+
+          docker rmi "${{ steps.azure.outputs.acr_login_server }}/${{ env.IMAGE_NAME }}:latest" 2>/dev/null || true
+          docker rmi "${{ steps.azure.outputs.acr_login_server }}/${{ env.IMAGE_NAME }}:${SHA_SHORT}" 2>/dev/null || true
+
+          AVAIL_GB=$(df --output=avail / | tail -1 | awk '{printf "%.0f", $1/1024/1024}')
+          if [ "$AVAIL_GB" -lt 10 ]; then
+            echo "Low disk after deploy, pruning stale Docker data older than 7 days"
+            docker builder prune -af --filter "until=168h" 2>/dev/null || true
+            docker image prune -af --filter "until=168h" 2>/dev/null || true
+          else
+            echo "Preserving Buildx cache for subsequent runs"
+          fi
+
+          df -h /
+          docker system df || true

@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, type PointerEvent } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import { useAuthStore } from "@/lib/auth-store";
 import { useGameStore } from "@/lib/game-store";
 import { registerMove } from "@/lib/ws";
 
@@ -13,8 +14,48 @@ function normalizeDegrees(value: number) {
   return ((value % 360) + 360) % 360;
 }
 
+function filledPowerStyle(index: number) {
+  if (index >= 8) {
+    return {
+      background: "linear-gradient(180deg, #F87171 0%, #DC2626 100%)",
+      boxShadow:
+        "0 0 12px rgba(248,113,113,0.35), inset 0 1px 0 rgba(255,255,255,0.2)",
+      border: "1.5px solid rgba(248,113,113,0.7)",
+    };
+  }
+
+  if (index >= 4) {
+    return {
+      background: "linear-gradient(180deg, #FB923C 0%, #EA580C 100%)",
+      boxShadow:
+        "0 0 12px rgba(251,146,60,0.32), inset 0 1px 0 rgba(255,255,255,0.18)",
+      border: "1.5px solid rgba(251,146,60,0.65)",
+    };
+  }
+
+  return {
+    background: "linear-gradient(180deg, #34D399 0%, #10B981 100%)",
+    boxShadow:
+      "0 0 12px rgba(52,211,153,0.35), inset 0 1px 0 rgba(255,255,255,0.2)",
+    border: "1.5px solid rgba(52,211,153,0.7)",
+  };
+}
+
+function canAimCurrentPlayer() {
+  const { phase, gameState } = useGameStore.getState();
+  const { playerId } = useAuthStore.getState();
+  const player = playerId ? gameState?.players[playerId] : undefined;
+  return (
+    phase === "countdown" &&
+    !!player &&
+    player.eliminated === 0 &&
+    player.zone !== "stage"
+  );
+}
+
 /** Send current aim to server */
 function sendCurrentAim() {
+  if (!canAimCurrentPlayer()) return;
   const { aimDirection, aimPower } = useGameStore.getState();
   registerMove({ direction: aimDirection, power: aimPower });
 }
@@ -24,6 +65,18 @@ export default function GameControls() {
   const countdown = useGameStore((s) => s.countdown);
   const currentRound = useGameStore((s) => s.currentRound);
   const aimPower = useGameStore((s) => s.aimPower);
+  const gameState = useGameStore((s) => s.gameState);
+  const playerId = useAuthStore((s) => s.playerId);
+  const currentPlayer = playerId ? gameState?.players[playerId] : undefined;
+  const canAim =
+    phase === "countdown" &&
+    !!currentPlayer &&
+    currentPlayer.eliminated === 0 &&
+    currentPlayer.zone !== "stage";
+  const canWalkStage =
+    !!currentPlayer &&
+    currentPlayer.zone === "stage" &&
+    (phase === "lobby" || currentPlayer.eliminated > 0);
 
   const filledSlots = aimPower;
   const turnDirRef = useRef<-1 | 0 | 1>(0);
@@ -44,42 +97,49 @@ export default function GameControls() {
     }
   }, []);
 
-  const turnLoop = useCallback((timestamp: number) => {
-    if (useGameStore.getState().phase !== "countdown") {
-      stopTurning();
-      return;
-    }
-
-    const turnDir = turnDirRef.current;
-    const lastTurnAt = lastTurnAtRef.current ?? timestamp;
-    const dt = Math.max(0, (timestamp - lastTurnAt) / 1000);
-    lastTurnAtRef.current = timestamp;
-
-    if (turnDir !== 0 && dt > 0) {
-      const store = useGameStore.getState();
-      const nextAimDirection = normalizeDegrees(
-        store.aimDirection + turnDir * TURN_SPEED_DEG_PER_SEC * dt,
-      );
-      store.setAimDirection(nextAimDirection);
-
-      if (timestamp - lastBroadcastAtRef.current >= AIM_BROADCAST_INTERVAL_MS) {
-        lastBroadcastAtRef.current = timestamp;
-        registerMove({
-          direction: nextAimDirection,
-          power: store.aimPower,
-        });
+  const turnLoop = useCallback(
+    (timestamp: number) => {
+      if (!canAimCurrentPlayer()) {
+        stopTurning();
+        return;
       }
-    }
 
-    turnFrameRef.current = requestAnimationFrame(turnLoop);
-  }, [stopTurning]);
+      const turnDir = turnDirRef.current;
+      const lastTurnAt = lastTurnAtRef.current ?? timestamp;
+      const dt = Math.max(0, (timestamp - lastTurnAt) / 1000);
+      lastTurnAtRef.current = timestamp;
+
+      if (turnDir !== 0 && dt > 0) {
+        const store = useGameStore.getState();
+        const nextAimDirection = normalizeDegrees(
+          store.aimDirection + turnDir * TURN_SPEED_DEG_PER_SEC * dt,
+        );
+        store.setAimDirection(nextAimDirection);
+
+        if (
+          timestamp - lastBroadcastAtRef.current >=
+          AIM_BROADCAST_INTERVAL_MS
+        ) {
+          lastBroadcastAtRef.current = timestamp;
+          registerMove({
+            direction: nextAimDirection,
+            power: store.aimPower,
+          });
+        }
+      }
+
+      turnFrameRef.current = requestAnimationFrame(turnLoop);
+    },
+    [stopTurning],
+  );
 
   const syncTurnDirection = useCallback(() => {
-    const nextDir = leftPressedRef.current === rightPressedRef.current
-      ? 0
-      : leftPressedRef.current
-        ? -1
-        : 1;
+    const nextDir =
+      leftPressedRef.current === rightPressedRef.current
+        ? 0
+        : leftPressedRef.current
+          ? -1
+          : 1;
 
     if (nextDir === 0) {
       turnDirRef.current = 0;
@@ -97,14 +157,17 @@ export default function GameControls() {
     }
   }, [turnLoop]);
 
-  const setTurnPressed = useCallback((dir: -1 | 1, pressed: boolean) => {
-    if (dir < 0) {
-      leftPressedRef.current = pressed;
-    } else {
-      rightPressedRef.current = pressed;
-    }
-    syncTurnDirection();
-  }, [syncTurnDirection]);
+  const setTurnPressed = useCallback(
+    (dir: -1 | 1, pressed: boolean) => {
+      if (dir < 0) {
+        leftPressedRef.current = pressed;
+      } else {
+        rightPressedRef.current = pressed;
+      }
+      syncTurnDirection();
+    },
+    [syncTurnDirection],
+  );
 
   /* ── Power cycling ── */
   const decreasePower = useCallback(() => {
@@ -125,17 +188,17 @@ export default function GameControls() {
 
   /* ── Send initial aim when countdown starts ── */
   useEffect(() => {
-    if (phase === "countdown") {
+    if (canAim) {
       lastBroadcastAtRef.current = 0;
       sendCurrentAim();
       return () => stopTurning();
     }
     stopTurning();
-  }, [phase, currentRound, stopTurning]);
+  }, [canAim, currentRound, stopTurning]);
 
   /* ── Keyboard listener for turning + Q/E power ── */
   useEffect(() => {
-    if (phase !== "countdown") return;
+    if (!canAim) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "a" || e.key === "A" || e.key === "ArrowLeft") {
@@ -170,14 +233,29 @@ export default function GameControls() {
       window.removeEventListener("blur", handleBlur);
       stopTurning();
     };
-  }, [phase, decreasePower, increasePower, setTurnPressed, stopTurning]);
+  }, [canAim, decreasePower, increasePower, setTurnPressed, stopTurning]);
 
-  if (phase === "lobby") {
+  if (canWalkStage) {
     return (
-      <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
-        <div className="bg-black/50 backdrop-blur-sm border border-[var(--border-warm)] rounded-xl px-5 py-2.5 text-center">
-          <span className="text-[var(--text-dim)] text-sm select-none font-[family-name:var(--font-fredoka)]">
-            WASD to walk &middot; Drag to orbit camera
+      <div
+        className="absolute z-20 pointer-events-none"
+        style={{
+          left: "50%",
+          transform: "translateX(-50%)",
+          bottom: "max(1rem, env(safe-area-inset-bottom))",
+          width: "min(30rem, calc(100vw - 1.5rem))",
+        }}
+      >
+        <div
+          className="rounded-none px-3 py-2 text-center"
+          style={{
+            background: "rgba(9, 14, 21, 0.82)",
+            border: "1px solid rgba(169, 196, 222, 0.18)",
+            boxShadow: "0 10px 26px rgba(0,0,0,0.2)",
+          }}
+        >
+          <span className="select-none text-sm text-[#d6e1ec] font-[family-name:var(--font-geist-sans)]">
+            WASD to walk on stage. Drag to orbit camera.
           </span>
         </div>
       </div>
@@ -186,189 +264,182 @@ export default function GameControls() {
 
   if (phase !== "countdown") return null;
 
-  const turnButtonProps = (dir: -1 | 1) => ({
-    onPointerDown: (e: PointerEvent<HTMLButtonElement>) => {
-      e.preventDefault();
-      setTurnPressed(dir, true);
-    },
-    onPointerUp: () => setTurnPressed(dir, false),
-    onPointerLeave: () => setTurnPressed(dir, false),
-    onPointerCancel: () => setTurnPressed(dir, false),
-  });
-
   const isUrgent = countdown <= 3;
 
   return (
-    <div className="absolute inset-0 z-20 pointer-events-none flex flex-col justify-between">
-      {/* ── Top: Countdown banner + Round pill ── */}
-      <div className="pointer-events-none flex flex-col items-center pt-4 gap-1.5">
+    <div className="absolute inset-0 z-20 pointer-events-none">
+      <div className="absolute left-1/2 top-4 flex -translate-x-1/2 flex-col items-center gap-1.5">
         <div
-          className="rounded-full px-10 py-2.5 shadow-lg"
+          className="rounded-none px-4 py-1.5 shadow-lg"
           style={{
-            background: "linear-gradient(135deg, rgba(15,13,10,0.85) 0%, rgba(30,25,18,0.85) 100%)",
-            border: `2px solid ${isUrgent ? "var(--accent-red)" : "var(--accent-orange)"}`,
+            background:
+              "linear-gradient(135deg, rgba(8,12,18,0.92) 0%, rgba(18,24,34,0.9) 100%)",
+            border: `1px solid ${isUrgent ? "rgba(248,113,113,0.55)" : "rgba(245,187,108,0.42)"}`,
             boxShadow: isUrgent
               ? "0 0 20px rgba(239,68,68,0.3), 0 4px 12px rgba(0,0,0,0.4)"
               : "0 0 20px rgba(255,107,44,0.15), 0 4px 12px rgba(0,0,0,0.4)",
           }}
         >
-          <span className="text-[var(--text-warm)] font-bold text-xl font-[family-name:var(--font-fredoka)] tracking-wide">
+          <span className="text-[var(--text-warm)] text-xl font-semibold tracking-[0.01em] font-[family-name:var(--font-geist-sans)]">
             Revealing aims in{" "}
             <span
-              className="font-[family-name:var(--font-bungee)] text-2xl"
-              style={{ color: isUrgent ? "var(--accent-red)" : "var(--accent-gold)" }}
+              className="font-[family-name:var(--font-geist-mono)] text-2xl"
+              style={{
+                color: isUrgent ? "var(--accent-red)" : "var(--accent-gold)",
+              }}
             >
               {countdown}
             </span>
           </span>
         </div>
         <div
-          className="rounded-full px-5 py-1"
+          className="rounded-none px-3 py-0.5"
           style={{
-            background: "rgba(15,13,10,0.7)",
-            border: "1px solid var(--border-warm)",
+            background: "rgba(10, 15, 22, 0.76)",
+            border: "1px solid rgba(169, 196, 222, 0.16)",
           }}
         >
-          <span className="text-[var(--text-muted)] text-sm font-semibold font-[family-name:var(--font-fredoka)] tracking-wide">
+          <span className="text-[#d6e1ec] text-sm font-medium font-[family-name:var(--font-geist-sans)] tracking-[0.08em]">
             Round {currentRound}
           </span>
         </div>
       </div>
 
-      {/* ── Center: Turn controls ── */}
-      <div className="pointer-events-auto flex flex-col items-center justify-center gap-3 px-4">
-        <div className="text-[var(--text-dim)] text-sm select-none flex items-center gap-2 text-center font-[family-name:var(--font-fredoka)]">
-          Hold A / D or Arrow keys to turn your penguin.
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            {...turnButtonProps(-1)}
-            className="rounded-xl px-5 py-3 text-sm font-semibold font-[family-name:var(--font-fredoka)]"
-            style={{
-              background: "linear-gradient(180deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 100%)",
-              border: "2px solid var(--border-warm)",
-              color: "var(--text-warm)",
-              boxShadow: "0 2px 4px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.05)",
-            }}
-          >
-            Turn Left
-          </button>
-          <button
-            {...turnButtonProps(1)}
-            className="rounded-xl px-5 py-3 text-sm font-semibold font-[family-name:var(--font-fredoka)]"
-            style={{
-              background: "linear-gradient(180deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 100%)",
-              border: "2px solid var(--border-warm)",
-              color: "var(--text-warm)",
-              boxShadow: "0 2px 4px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.05)",
-            }}
-          >
-            Turn Right
-          </button>
-        </div>
-      </div>
-
-      {/* ── Bottom: Power bar ── */}
-      <div className="pointer-events-auto pb-5 px-4">
-        <div className="max-w-xl mx-auto flex flex-col gap-2 items-center">
-          {/* Power label pill */}
-          <div
-            className="rounded-full px-6 py-1.5"
-            style={{
-              background: "linear-gradient(135deg, rgba(15,13,10,0.9) 0%, rgba(25,20,14,0.9) 100%)",
-              border: "1.5px solid var(--border-warm)",
-              boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
-            }}
-          >
-            <span className="text-[var(--text-warm)] font-bold text-base font-[family-name:var(--font-fredoka)] tracking-wide">
-              Power {aimPower}
-            </span>
-          </div>
-
-          {/* Power bar with Q/E controls */}
-          <div
-            className="flex items-center gap-2 rounded-2xl px-3 py-2.5 w-full"
-            style={{
-              background: "linear-gradient(135deg, rgba(15,13,10,0.9) 0%, rgba(25,20,14,0.9) 100%)",
-              border: "2px solid var(--border-warm)",
-              boxShadow: "0 4px 16px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)",
-            }}
-          >
-            {/* Q Button */}
-            <button
-              onClick={(e) => { e.stopPropagation(); decreasePower(); }}
-              className="flex flex-col items-center gap-0.5 shrink-0 group"
+      {canAim && (
+        <div
+          className="absolute pointer-events-none"
+          style={{
+            left: "50%",
+            transform: "translateX(-50%)",
+            bottom: "max(0.75rem, env(safe-area-inset-bottom))",
+            width: "min(40rem, calc(100vw - 1.5rem))",
+          }}
+        >
+          <div className="mb-2 flex justify-center">
+            <div
+              className="rounded-none px-3 py-1 text-[10px] uppercase tracking-[0.16em]"
+              style={{
+                background: "rgba(8, 13, 19, 0.82)",
+                border: "1px solid rgba(169, 196, 222, 0.16)",
+                color: "#d6e1ec",
+              }}
             >
-              <div
-                className="w-12 h-12 rounded-xl flex items-center justify-center font-[family-name:var(--font-bungee)] text-xl transition-all group-hover:scale-105 group-active:scale-95"
-                style={{
-                  background: "linear-gradient(180deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 100%)",
-                  border: "2px solid var(--border-warm)",
-                  color: "var(--text-warm)",
-                  boxShadow: "0 2px 4px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.05)",
-                }}
-              >
-                Q
-              </div>
-              <span className="text-[8px] text-[var(--text-dim)] font-[family-name:var(--font-fredoka)] font-semibold tracking-wider uppercase">
-                or tap
-              </span>
-            </button>
-
-            {/* Power slots */}
-            <div className="flex gap-1 flex-1 justify-center">
-              {Array.from({ length: MAX_SLOTS }).map((_, i) => {
-                const isFilled = i < filledSlots;
-                return (
-                  <button
-                    key={i}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const level = POWER_LEVELS[Math.min(Math.floor(i / 2), POWER_LEVELS.length - 1)]!;
-                      useGameStore.getState().setAimPower(level);
-                      sendCurrentAim();
-                    }}
-                    className="flex-1 h-10 rounded-lg transition-all"
-                    style={
-                      isFilled
-                        ? {
-                            background: "linear-gradient(180deg, #2ECC71 0%, #27AE60 100%)",
-                            boxShadow: "0 0 8px rgba(46,204,113,0.4), inset 0 1px 0 rgba(255,255,255,0.2)",
-                            border: "1.5px solid rgba(46,204,113,0.6)",
-                          }
-                        : {
-                            background: "rgba(255,255,255,0.03)",
-                            border: "1.5px solid var(--border-warm)",
-                          }
-                    }
-                  />
-                );
-              })}
+              Turn with A / D or drag
             </div>
-
-            {/* E Button */}
-            <button
-              onClick={(e) => { e.stopPropagation(); increasePower(); }}
-              className="flex flex-col items-center gap-0.5 shrink-0 group"
-            >
-              <div
-                className="w-12 h-12 rounded-xl flex items-center justify-center font-[family-name:var(--font-bungee)] text-xl transition-all group-hover:scale-105 group-active:scale-95"
+          </div>
+          <div
+            className="pointer-events-auto rounded-none px-2 py-2 sm:px-3"
+            style={{
+              background:
+                "linear-gradient(180deg, rgba(8,12,18,0.95) 0%, rgba(16,21,30,0.93) 100%)",
+              border: "1px solid rgba(169, 196, 222, 0.2)",
+              boxShadow:
+                "0 16px 36px rgba(0,0,0,0.42), inset 0 1px 0 rgba(255,255,255,0.04)",
+            }}
+          >
+            <div className="grid grid-cols-[3.25rem,minmax(0,1fr),3.25rem] items-end gap-2 sm:grid-cols-[4rem,minmax(0,1fr),4rem] sm:gap-2.5">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  decreasePower();
+                }}
+                className="flex w-full shrink-0 flex-col items-center justify-center gap-1 rounded-none px-2 py-2 transition-transform hover:scale-[1.01] active:scale-95"
                 style={{
-                  background: "linear-gradient(180deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 100%)",
-                  border: "2px solid var(--border-warm)",
+                  background:
+                    "linear-gradient(180deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.02) 100%)",
+                  border: "1px solid rgba(169, 196, 222, 0.18)",
                   color: "var(--text-warm)",
-                  boxShadow: "0 2px 4px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.05)",
                 }}
               >
-                E
+                <span className="font-[family-name:var(--font-geist-mono)] text-xl font-semibold">
+                  Q
+                </span>
+                <span className="text-[9px] uppercase tracking-[0.16em] text-[#9db1c3] font-[family-name:var(--font-geist-sans)]">
+                  lower
+                </span>
+              </button>
+
+              <div className="min-w-0 flex-1">
+                <div className="mb-2 flex justify-center">
+                  <div
+                    className="rounded-none px-3 py-1"
+                    style={{
+                      background: "rgba(4,8,14,0.78)",
+                      border: "1px solid rgba(169, 196, 222, 0.16)",
+                    }}
+                  >
+                    <span className="font-[family-name:var(--font-geist-sans)] text-base font-semibold text-[var(--text-warm)]">
+                      Power {aimPower}
+                    </span>
+                  </div>
+                </div>
+
+                <div
+                  className="grid grid-cols-10 gap-1 rounded-none px-2.5 py-2.5 sm:gap-1.5 sm:px-3"
+                  style={{
+                    background:
+                      "linear-gradient(180deg, rgba(2,6,10,0.9) 0%, rgba(10,15,24,0.88) 100%)",
+                    border: "1px solid rgba(255,255,255,0.08)",
+                    boxShadow:
+                      "inset 0 1px 0 rgba(255,255,255,0.04), 0 10px 22px rgba(0,0,0,0.24)",
+                  }}
+                >
+                  {Array.from({ length: MAX_SLOTS }).map((_, i) => {
+                    const isFilled = i < filledSlots;
+                    return (
+                      <button
+                        key={i}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const level =
+                            POWER_LEVELS[
+                              Math.min(
+                                Math.floor(i / 2),
+                                POWER_LEVELS.length - 1,
+                              )
+                            ]!;
+                          useGameStore.getState().setAimPower(level);
+                          sendCurrentAim();
+                        }}
+                        className="h-8 rounded-none transition-all hover:-translate-y-0.5 active:translate-y-0 sm:h-10"
+                        style={
+                          isFilled
+                            ? filledPowerStyle(i)
+                            : {
+                                background: "rgba(255,255,255,0.045)",
+                                border: "1.5px solid rgba(255,255,255,0.08)",
+                              }
+                        }
+                      />
+                    );
+                  })}
+                </div>
               </div>
-              <span className="text-[8px] text-[var(--text-dim)] font-[family-name:var(--font-fredoka)] font-semibold tracking-wider uppercase">
-                or tap
-              </span>
-            </button>
+
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  increasePower();
+                }}
+                className="flex w-full shrink-0 flex-col items-center justify-center gap-1 rounded-none px-2 py-2 transition-transform hover:scale-[1.01] active:scale-95"
+                style={{
+                  background:
+                    "linear-gradient(180deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.02) 100%)",
+                  border: "1px solid rgba(169, 196, 222, 0.18)",
+                  color: "var(--text-warm)",
+                }}
+              >
+                <span className="font-[family-name:var(--font-geist-mono)] text-xl font-semibold">
+                  E
+                </span>
+                <span className="text-[9px] uppercase tracking-[0.16em] text-[#9db1c3] font-[family-name:var(--font-geist-sans)]">
+                  raise
+                </span>
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

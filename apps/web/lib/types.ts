@@ -9,10 +9,13 @@ export interface Penguin {
   type: "anonymous" | "registered";
   skin: string;
   position: Position;
+  stage_position?: Position;
+  zone?: "map" | "stage";
   mass: number;
   accel: number;
   velocity: number;
   direction: number;
+  public_direction?: number;
   eliminated: number;
   score: number;
 }
@@ -51,6 +54,19 @@ export interface MapConfig {
   friction: number;
 }
 
+export interface GameResultPlayerScore {
+  player_id: string;
+  score: number;
+  eliminated_round: number;
+}
+
+export interface GameResult {
+  id: string;
+  player_scores: GameResultPlayerScore[];
+  rounds: number;
+  played_at: string;
+}
+
 // Server -> Client events
 export type ServerEvent =
   | "game_created"
@@ -62,6 +78,7 @@ export type ServerEvent =
   | "player_move_ack"
   | "players_position_update"
   | "round_start_countdown"
+  | "rematch_created"
   | "game_state"
   | "error";
 
@@ -71,7 +88,8 @@ export type ClientEvent =
   | "register_move"
   | "update_position"
   | "get_state"
-  | "start_game";
+  | "start_game"
+  | "play_again";
 
 export interface IncomingMessage {
   event: ClientEvent;
@@ -107,4 +125,9 @@ export interface GameEndedPayload {
 
 export interface MoveAckPayload {
   player_id: string;
+}
+
+export interface RematchCreatedPayload {
+  game_id: string;
+  game_state: GameState;
 }

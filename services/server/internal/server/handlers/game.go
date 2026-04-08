@@ -2,12 +2,15 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"knockout/internal/models/entities"
 	"knockout/internal/physics"
 	"knockout/internal/repository"
 	"knockout/internal/server/middlewares"
 	"log"
+	"math"
 	"math/rand"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,11 +18,18 @@ import (
 	"github.com/gofiber/websocket/v2"
 )
 
+var errInvalidGameState = errors.New("invalid game state")
+
 const (
-	pingInterval   = 30 * time.Second
-	pongWait       = 90 * time.Second
-	writeWait      = 30 * time.Second
-	maxPingRetries = 3
+	pingInterval          = 30 * time.Second
+	pongWait              = 90 * time.Second
+	writeWait             = 30 * time.Second
+	maxPingRetries        = 3
+	gameWriteLockTTL      = 20 * time.Second
+	gameWriteLockAttempts = 8
+	gameWriteLockBackoff  = 25 * time.Millisecond
+	gameLoopLockTTL       = 12 * time.Second
+	gameLoopLockRefresh   = 4 * time.Second
 )
 
 type events string
@@ -31,6 +41,7 @@ const (
 	getState       events = "get_state"
 	errorEvent     events = "error"
 	startGame      events = "start_game"
+	playAgain      events = "play_again"
 )
 
 type outgoing struct {
@@ -71,10 +82,16 @@ type moveAckPayload struct {
 	PlayerId string `json:"player_id"`
 }
 
+type rematchCreatedPayload struct {
+	GameId    string             `json:"game_id"`
+	GameState *physics.GameState `json:"game_state"`
+}
+
 var runningGames sync.Map
 var gameLocks sync.Map
 var localPositionSubscribers sync.Map
 var redisPositionPublishers sync.Map
+var rematchGames sync.Map
 
 type positionSubscriberSet struct {
 	mu   sync.RWMutex
@@ -90,6 +107,22 @@ type positionPublishWorker struct {
 func gameLock(gameId string) *sync.Mutex {
 	lock, _ := gameLocks.LoadOrStore(gameId, &sync.Mutex{})
 	return lock.(*sync.Mutex)
+}
+
+func withGameWriteLock(gameId string, fn func()) bool {
+	for i := 0; i < gameWriteLockAttempts; i++ {
+		lock, ok := repository.AcquireGameLock(gameId, gameWriteLockTTL)
+		if ok {
+			local := gameLock(gameId)
+			local.Lock()
+			defer local.Unlock()
+			defer lock.Release()
+			fn()
+			return true
+		}
+		time.Sleep(gameWriteLockBackoff)
+	}
+	return false
 }
 
 func localPositionSet(gameId string) *positionSubscriberSet {
@@ -235,7 +268,7 @@ func WSHandler(c *websocket.Conn) {
 		return nil
 	})
 
-	game, err := repository.LoadGame(gameId)
+	game, err := repository.LoadGameFresh(gameId)
 	if err != nil {
 		log.Printf("[%s] failed to load game: %v", gameId, err)
 		c.Close()
@@ -441,12 +474,8 @@ func WSHandler(c *websocket.Conn) {
 			continue
 		}
 
-		func() {
-			lock := gameLock(gameId)
-			lock.Lock()
-			defer lock.Unlock()
-
-			game, err := repository.LoadGame(gameId)
+		if ok := withGameWriteLock(gameId, func() {
+			game, err := repository.LoadGameFresh(gameId)
 			if err != nil || game.GameState == nil {
 				writeJSON(outgoing{
 					Event: repository.ErrorEvent,
@@ -491,6 +520,20 @@ func WSHandler(c *websocket.Conn) {
 					if player.Skin != "" && !game.GameState.Started {
 						existing.Skin = player.Skin
 					}
+					if existing.Zone == "" {
+						if game.GameState.Started && existing.Eliminated == 0 {
+							existing.Zone = entities.PenguinZoneMap
+						} else {
+							existing.Zone = entities.PenguinZoneStage
+						}
+					}
+					if existing.Zone == entities.PenguinZoneStage {
+						existing = ensureStagePosition(game.GameState, player.Id, existing)
+					}
+					if existing.PublicDirection == 0 && existing.Direction != 0 {
+						existing.PublicDirection = normalizeDirection(existing.Direction)
+					}
+					existing.PublicDirection = normalizeDirection(existing.PublicDirection)
 					game.GameState.Players[player.Id] = existing
 					if _, err := game.UpdateGame(); err != nil {
 						writeJSON(outgoing{
@@ -498,6 +541,13 @@ func WSHandler(c *websocket.Conn) {
 							Error: err.Error(),
 						})
 					}
+					return
+				}
+				if game.GameState.Started {
+					writeJSON(outgoing{
+						Event: repository.ErrorEvent,
+						Error: "game already started",
+					})
 					return
 				}
 
@@ -511,13 +561,14 @@ func WSHandler(c *websocket.Conn) {
 				player.Accel = 0
 				player.Velocity = 0
 				player.Direction = 0
+				player.PublicDirection = 0
 				player.Eliminated = 0
-
-				// Assign random spawn position within map bounds (with 15% margin)
-				marginX := float64(game.GameState.Map.Length) * 0.15
-				marginZ := float64(game.GameState.Map.Width) * 0.15
-				player.Position.X = marginX + rand.Float64()*(float64(game.GameState.Map.Length)-2*marginX)
-				player.Position.Z = marginZ + rand.Float64()*(float64(game.GameState.Map.Width)-2*marginZ)
+				player.Zone = entities.PenguinZoneStage
+				player.StagePosition = defaultStagePositionForIndex(len(game.GameState.Players))
+				player.Position = entities.Position{
+					X: float64(game.GameState.Map.Length) / 2,
+					Z: float64(game.GameState.Map.Width) / 2,
+				}
 
 				if game.GameState.HostId == "" {
 					game.GameState.HostId = player.Id
@@ -553,7 +604,8 @@ func WSHandler(c *websocket.Conn) {
 					return
 				}
 
-				player.Direction = playerMove.Direction
+				player.Direction = normalizeDirection(playerMove.Direction)
+				playerMove.Direction = player.Direction
 				game.GameState.Players[playerId] = player
 
 				game.GameState.CurrentMoves[playerId] = playerMove
@@ -582,9 +634,11 @@ func WSHandler(c *websocket.Conn) {
 				if game.GameState.Started && player.Eliminated == 0 {
 					return
 				}
-				player.Position = pos
+				player.StagePosition = pos
+				player.Zone = entities.PenguinZoneStage
 				if direction != nil {
-					player.Direction = *direction
+					player.Direction = normalizeDirection(*direction)
+					player.PublicDirection = player.Direction
 				}
 				game.GameState.Players[playerId] = player
 				if err := publishPlayersPositionUpdate(game); err != nil {
@@ -619,6 +673,7 @@ func WSHandler(c *websocket.Conn) {
 					return
 				}
 
+				preparePlayersForMatchStart(game.GameState)
 				game.GameState.Started = true
 				game.GameState.AcceptingMoves = true
 				if game.GameState.CurrentRound <= 0 {
@@ -641,13 +696,41 @@ func WSHandler(c *websocket.Conn) {
 					Event: repository.GameState,
 					Data:  maskGameStateForPlayer(game.GameState, playerId),
 				})
+			case playAgain:
+				if aliveCount(game.GameState) > 1 {
+					writeJSON(outgoing{
+						Event: repository.ErrorEvent,
+						Error: "game is still in progress",
+					})
+					return
+				}
+
+				rematch, err := createOrLoadRematch(game)
+				if err != nil {
+					writeJSON(outgoing{
+						Event: repository.ErrorEvent,
+						Error: err.Error(),
+					})
+					return
+				}
+
+				payload := rematchCreatedPayload{
+					GameId:    rematch.Id,
+					GameState: maskGameStateForPlayer(rematch.GameState, ""),
+				}
+				_ = game.PublishEvent(repository.RematchCreated, payload, nil)
 			case getState:
 				writeJSON(outgoing{
 					Event: repository.GameState,
 					Data:  maskGameStateForPlayer(game.GameState, playerId),
 				})
 			}
-		}()
+		}); !ok {
+			writeJSON(outgoing{
+				Event: repository.ErrorEvent,
+				Error: "server busy, try again",
+			})
+		}
 	}
 }
 
@@ -659,12 +742,17 @@ func maskGameStateForPlayer(gs *physics.GameState, viewerId string) *physics.Gam
 	masked.Players = make(map[string]entities.Penguin, len(gs.Players))
 	for id, player := range gs.Players {
 		player.PlayerSecret = ""
+		if player.PublicDirection == 0 && player.Direction != 0 {
+			player.PublicDirection = normalizeDirection(player.Direction)
+		}
+		if gs.Started && gs.AcceptingMoves && id != viewerId && player.Eliminated == 0 {
+			player.Direction = player.PublicDirection
+		}
 		masked.Players[id] = player
 	}
 
 	masked.CurrentMoves = make(map[string]entities.PenguinMove, len(gs.CurrentMoves))
-	viewer, ok := gs.Players[viewerId]
-	if ok && viewer.Eliminated == 0 {
+	if gs.AcceptingMoves {
 		if move, ok := gs.CurrentMoves[viewerId]; ok {
 			masked.CurrentMoves[viewerId] = move
 		}
@@ -715,6 +803,234 @@ func parseLobbyPositionPayload(raw json.RawMessage) (entities.Position, *float64
 		pos.Z = *payload.Z
 	}
 	return pos, payload.Direction, nil
+}
+
+func normalizeDirection(direction float64) float64 {
+	direction = math.Mod(direction, 360)
+	if direction < 0 {
+		direction += 360
+	}
+	return direction
+}
+
+func sortedPlayerIDs(gs *physics.GameState) []string {
+	if gs == nil {
+		return nil
+	}
+	ids := make([]string, 0, len(gs.Players))
+	for id := range gs.Players {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func defaultStagePositionForIndex(index int) entities.Position {
+	if index < 0 {
+		index = 0
+	}
+	const (
+		playersPerRing = 8
+		baseRadius     = 1.8
+		ringStep       = 0.95
+	)
+	ring := index / playersPerRing
+	slot := index % playersPerRing
+	radius := baseRadius + float64(ring)*ringStep
+	angle := (2 * math.Pi * float64(slot)) / float64(playersPerRing)
+	angle += float64(ring) * 0.35
+	return entities.Position{
+		X: math.Cos(angle) * radius,
+		Z: math.Sin(angle) * radius,
+	}
+}
+
+func ensureStagePosition(gs *physics.GameState, playerId string, player entities.Penguin) entities.Penguin {
+	if player.StagePosition == (entities.Position{}) {
+		index := 0
+		for i, id := range sortedPlayerIDs(gs) {
+			if id == playerId {
+				index = i
+				break
+			}
+		}
+		player.StagePosition = defaultStagePositionForIndex(index)
+	}
+	return player
+}
+
+func revealPlayerDirections(gs *physics.GameState) {
+	if gs == nil {
+		return
+	}
+	for id, player := range gs.Players {
+		player.PublicDirection = normalizeDirection(player.Direction)
+		gs.Players[id] = player
+	}
+}
+
+func generateMapSpawnPositions(length, width, count int) []entities.Position {
+	if count <= 0 {
+		return nil
+	}
+
+	spawns := make([]entities.Position, 0, count)
+	marginX := math.Max(1.75, float64(length)*0.15)
+	marginZ := math.Max(1.75, float64(width)*0.15)
+	minDist := 2.8
+
+	trySpawn := func() entities.Position {
+		return entities.Position{
+			X: marginX + rand.Float64()*(float64(length)-2*marginX),
+			Z: marginZ + rand.Float64()*(float64(width)-2*marginZ),
+		}
+	}
+
+	for len(spawns) < count {
+		candidate := trySpawn()
+		placed := true
+		for _, existing := range spawns {
+			if math.Hypot(candidate.X-existing.X, candidate.Z-existing.Z) < minDist {
+				placed = false
+				break
+			}
+		}
+		if placed {
+			spawns = append(spawns, candidate)
+			continue
+		}
+
+		if len(spawns) == 0 {
+			spawns = append(spawns, candidate)
+			continue
+		}
+
+		for attempt := 0; attempt < 96; attempt++ {
+			candidate = trySpawn()
+			placed = true
+			for _, existing := range spawns {
+				if math.Hypot(candidate.X-existing.X, candidate.Z-existing.Z) < minDist {
+					placed = false
+					break
+				}
+			}
+			if placed {
+				spawns = append(spawns, candidate)
+				break
+			}
+		}
+
+		if len(spawns) < count {
+			fallbackIndex := len(spawns)
+			angle := (2 * math.Pi * float64(fallbackIndex)) / float64(count)
+			radiusX := math.Max(1, (float64(length)-2*marginX)*0.35)
+			radiusZ := math.Max(1, (float64(width)-2*marginZ)*0.35)
+			spawns = append(spawns, entities.Position{
+				X: float64(length)/2 + math.Cos(angle)*radiusX,
+				Z: float64(width)/2 + math.Sin(angle)*radiusZ,
+			})
+		}
+	}
+
+	return spawns
+}
+
+func preparePlayersForMatchStart(gs *physics.GameState) {
+	if gs == nil {
+		return
+	}
+
+	ids := sortedPlayerIDs(gs)
+	spawns := generateMapSpawnPositions(gs.Map.Length, gs.Map.Width, len(ids))
+	for i, id := range ids {
+		player := gs.Players[id]
+		if i < len(spawns) {
+			player.Position = spawns[i]
+		}
+		player.Zone = entities.PenguinZoneMap
+		player.Accel = 0
+		player.Velocity = 0
+		player.Direction = normalizeDirection(player.Direction)
+		player.PublicDirection = player.Direction
+		player.Eliminated = 0
+		gs.Players[id] = player
+	}
+	gs.CurrentMoves = make(map[string]entities.PenguinMove)
+	gs.LastHitBy = nil
+}
+
+func moveEliminatedPlayersToStage(gs *physics.GameState, round int) {
+	if gs == nil || round <= 0 {
+		return
+	}
+	for id, player := range gs.Players {
+		if player.Eliminated != round {
+			continue
+		}
+		player = ensureStagePosition(gs, id, player)
+		player.Zone = entities.PenguinZoneStage
+		player.Accel = 0
+		player.Velocity = 0
+		gs.Players[id] = player
+	}
+}
+
+func createOrLoadRematch(game *repository.Game) (*repository.Game, error) {
+	if game == nil || game.GameState == nil {
+		return nil, errInvalidGameState
+	}
+
+	if existingId, ok := rematchGames.Load(game.Id); ok {
+		if rematch, err := repository.LoadGameFresh(existingId.(string)); err == nil {
+			return rematch, nil
+		}
+	}
+
+	mapLength := game.GameState.Map.Length
+	mapWidth := game.GameState.Map.Width
+	mapFriction := game.GameState.Map.Friction
+	if cfg, ok := GetMapConfig(game.GameState.Map.Type); ok {
+		mapLength = cfg.Length
+		mapWidth = cfg.Width
+		mapFriction = cfg.Friction
+	}
+
+	rematch, err := repository.CreateGame(
+		game.GameState.Map.Type,
+		mapLength,
+		mapWidth,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	rematch.GameState.Map.Friction = mapFriction
+	rematch.GameState.WaitTime = game.GameState.WaitTime
+	rematch.GameState.HostId = game.GameState.HostId
+
+	for i, id := range sortedPlayerIDs(game.GameState) {
+		player := game.GameState.Players[id]
+		player.Accel = 0
+		player.Velocity = 0
+		player.Eliminated = 0
+		player.Score = 0
+		player.Direction = normalizeDirection(player.PublicDirection)
+		player.PublicDirection = player.Direction
+		player.Zone = entities.PenguinZoneStage
+		player.StagePosition = defaultStagePositionForIndex(i)
+		player.Position = entities.Position{
+			X: float64(rematch.GameState.Map.Length) / 2,
+			Z: float64(rematch.GameState.Map.Width) / 2,
+		}
+		rematch.GameState.Players[id] = player
+	}
+
+	if _, err := rematch.UpdateGame(); err != nil {
+		return nil, err
+	}
+
+	rematchGames.Store(game.Id, rematch.Id)
+	return rematch, nil
 }
 
 func sanitizePlayer(player entities.Penguin) entities.Penguin {
@@ -768,6 +1084,35 @@ func findWinnerId(gs *physics.GameState) string {
 	return ""
 }
 
+func persistGameResult(game *repository.Game) {
+	if game == nil || game.GameState == nil {
+		return
+	}
+	playerScores := make([]repository.PlayerScore, 0, len(game.GameState.Players))
+	for _, player := range game.GameState.Players {
+		playerScores = append(playerScores, repository.PlayerScore{
+			PlayerId:        player.Id,
+			Score:           float64(player.Score),
+			EliminatedRound: player.Eliminated,
+		})
+	}
+	sort.Slice(playerScores, func(i, j int) bool {
+		if playerScores[i].Score == playerScores[j].Score {
+			return playerScores[i].EliminatedRound < playerScores[j].EliminatedRound
+		}
+		return playerScores[i].Score > playerScores[j].Score
+	})
+	record := repository.Games{
+		Id:           game.Id,
+		PlayerScores: playerScores,
+		Rounds:       game.GameState.CurrentRound,
+		PlayedAt:     time.Now(),
+	}
+	if err := repository.SaveGame(record); err != nil {
+		log.Printf("[%s] failed to save game results: %v", game.Id, err)
+	}
+}
+
 func emitCountdown(game *repository.Game, round int, wait time.Duration) {
 	seconds := int(wait.Seconds())
 	if seconds <= 0 {
@@ -795,108 +1140,169 @@ func startGameLoop(gameId string) {
 				log.Printf("[%s] game loop panic recovered: %v", gameId, r)
 			}
 		}()
-		for {
-			lock := gameLock(gameId)
-			lock.Lock()
-			game, err := repository.LoadGame(gameId)
-			if err != nil || game.GameState == nil {
-				lock.Unlock()
-				return
-			}
 
-			if !game.GameState.Started {
-				game.GameState.Started = true
-				if game.GameState.CurrentRound <= 0 {
-					game.GameState.CurrentRound = 1
-				}
-				if game.GameState.WaitTime == 0 {
-					game.GameState.WaitTime = 2 * time.Second
-				}
-				if _, err := game.UpdateGame(); err == nil {
-					_ = game.PublishEvent(repository.GameState, nil, game.GameState)
-				}
-			}
-
-			if aliveCount(game.GameState) <= 1 {
-				winnerId := findWinnerId(game.GameState)
-				_ = game.PublishEvent(repository.GameEnded, struct {
-					WinnerId string `json:"winner_id,omitempty"`
-				}{WinnerId: winnerId}, game.GameState)
-				lock.Unlock()
-				return
-			}
-
-			if !game.GameState.AcceptingMoves {
-				game.GameState.AcceptingMoves = true
-				if _, err := game.UpdateGame(); err != nil {
-					lock.Unlock()
+		loopLock, ok := repository.AcquireGameLoopLock(gameId, gameLoopLockTTL)
+		if !ok {
+			return
+		}
+		leaderLost := make(chan struct{})
+		stopRefresh := make(chan struct{})
+		var lostOnce sync.Once
+		go func() {
+			ticker := time.NewTicker(gameLoopLockRefresh)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stopRefresh:
 					return
-				}
-			}
-
-			round := game.GameState.CurrentRound
-			waitTime := game.GameState.WaitTime
-			lock.Unlock()
-
-			emitCountdown(game, round, waitTime)
-
-			lock.Lock()
-			game, err = repository.LoadGame(gameId)
-			if err != nil || game.GameState == nil {
-				lock.Unlock()
-				return
-			}
-
-			if game.GameState.AcceptingMoves {
-				game.GameState.AcceptingMoves = false
-				if _, err := game.UpdateGame(); err != nil {
-					lock.Unlock()
-					return
-				}
-			}
-
-			round = game.GameState.CurrentRound
-			movesSnapshot := copyMoves(game.GameState.CurrentMoves)
-
-			_ = game.PublishEvent(repository.PlayerMadeMove, roundMovesPayload{
-				Round: round,
-				Moves: movesSnapshot,
-			}, nil)
-
-			// Stream authoritative positions during simulation at ~20fps.
-			// SimulateTick is pure math (no real-time delay), so we add a small
-			// sleep to spread updates over time for smooth frontend animation.
-			const posPublishInterval = 50 * time.Millisecond
-			game.GameState.PlayMovesWithCallback(func(players map[string]entities.Penguin) {
-				_ = publishPlayersPositionUpdate(game)
-				time.Sleep(posPublishInterval)
-			})
-
-			if _, err := game.UpdateGame(); err != nil {
-				lock.Unlock()
-				return
-			}
-
-			for _, player := range eliminatedPlayers(game.GameState, round) {
-				eliminatedBy := ""
-				if game.GameState.LastHitBy != nil {
-					if hitter, ok := game.GameState.LastHitBy[player.Id]; ok {
-						eliminatedBy = hitter
+				case <-ticker.C:
+					if !loopLock.Refresh(gameLoopLockTTL) {
+						lostOnce.Do(func() {
+							close(leaderLost)
+						})
+						return
 					}
 				}
-				_ = game.PublishEvent(repository.PlayerEliminated, struct {
-					PlayerId     string `json:"player_id"`
-					Round        int    `json:"round"`
-					EliminatedBy string `json:"eliminated_by,omitempty"`
-				}{
-					PlayerId:     player.Id,
-					Round:        player.Eliminated,
-					EliminatedBy: eliminatedBy,
-				}, nil)
+			}
+		}()
+		defer func() {
+			close(stopRefresh)
+			loopLock.Release()
+		}()
+
+		for {
+			select {
+			case <-leaderLost:
+				return
+			default:
 			}
 
-			_ = game.PublishEvent(repository.GameState, nil, game.GameState)
-			lock.Unlock()
+			var round int
+			var waitTime time.Duration
+			var gameForCountdown *repository.Game
+			var endLoop bool
+
+			if ok := withGameWriteLock(gameId, func() {
+				game, err := repository.LoadGameFresh(gameId)
+				if err != nil || game.GameState == nil {
+					endLoop = true
+					return
+				}
+
+				if !game.GameState.Started {
+					preparePlayersForMatchStart(game.GameState)
+					game.GameState.Started = true
+					if game.GameState.CurrentRound <= 0 {
+						game.GameState.CurrentRound = 1
+					}
+					if game.GameState.WaitTime == 0 {
+						game.GameState.WaitTime = 2 * time.Second
+					}
+					if _, err := game.UpdateGame(); err == nil {
+						_ = game.PublishEvent(repository.GameState, nil, game.GameState)
+					}
+				}
+
+				if aliveCount(game.GameState) <= 1 {
+					winnerId := findWinnerId(game.GameState)
+					persistGameResult(game)
+					_ = game.PublishEvent(repository.GameEnded, struct {
+						WinnerId string `json:"winner_id,omitempty"`
+					}{WinnerId: winnerId}, game.GameState)
+					endLoop = true
+					return
+				}
+
+				if !game.GameState.AcceptingMoves {
+					game.GameState.AcceptingMoves = true
+					if _, err := game.UpdateGame(); err != nil {
+						endLoop = true
+						return
+					}
+				}
+
+				round = game.GameState.CurrentRound
+				waitTime = game.GameState.WaitTime
+				gameForCountdown = game
+			}); !ok {
+				time.Sleep(gameWriteLockBackoff)
+				continue
+			}
+
+			if endLoop || gameForCountdown == nil {
+				return
+			}
+
+			emitCountdown(gameForCountdown, round, waitTime)
+
+			var endAfter bool
+
+			if ok := withGameWriteLock(gameId, func() {
+				game, err := repository.LoadGameFresh(gameId)
+				if err != nil || game.GameState == nil {
+					endAfter = true
+					return
+				}
+
+				if game.GameState.AcceptingMoves {
+					game.GameState.AcceptingMoves = false
+					if _, err := game.UpdateGame(); err != nil {
+						endAfter = true
+						return
+					}
+				}
+
+				round = game.GameState.CurrentRound
+				movesSnapshot := copyMoves(game.GameState.CurrentMoves)
+
+				_ = game.PublishEvent(repository.PlayerMadeMove, roundMovesPayload{
+					Round: round,
+					Moves: movesSnapshot,
+				}, nil)
+
+				// Stream authoritative positions during simulation at ~20fps.
+				// SimulateTick is pure math (no real-time delay), so we add a small
+				// sleep to spread updates over time for smooth frontend animation.
+				const posPublishInterval = 50 * time.Millisecond
+				game.GameState.PlayMovesWithCallback(func(players map[string]entities.Penguin) {
+					_ = publishPlayersPositionUpdate(game)
+					time.Sleep(posPublishInterval)
+				})
+				moveEliminatedPlayersToStage(game.GameState, round)
+				revealPlayerDirections(game.GameState)
+
+				if _, err := game.UpdateGame(); err != nil {
+					endAfter = true
+					return
+				}
+
+				for _, player := range eliminatedPlayers(game.GameState, round) {
+					eliminatedBy := ""
+					if game.GameState.LastHitBy != nil {
+						if hitter, ok := game.GameState.LastHitBy[player.Id]; ok {
+							eliminatedBy = hitter
+						}
+					}
+					_ = game.PublishEvent(repository.PlayerEliminated, struct {
+						PlayerId     string `json:"player_id"`
+						Round        int    `json:"round"`
+						EliminatedBy string `json:"eliminated_by,omitempty"`
+					}{
+						PlayerId:     player.Id,
+						Round:        player.Eliminated,
+						EliminatedBy: eliminatedBy,
+					}, nil)
+				}
+
+				_ = game.PublishEvent(repository.GameState, nil, game.GameState)
+			}); !ok {
+				time.Sleep(gameWriteLockBackoff)
+				continue
+			}
+
+			if endAfter {
+				return
+			}
 		}
 	}()
 }

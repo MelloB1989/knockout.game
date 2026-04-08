@@ -106,17 +106,27 @@ interface PenguinTracker {
   lastY: number;
   currentRotY: number;
   isEliminated: boolean;
+  fallStartAt: number | null;
+  fallOrigin: Vector3 | null;
+  fallStageTarget: Vector3 | null;
 }
 
-const LOBBY_INTERP_DURATION = 0.04;
 const SERVER_INTERP_DURATION = 0.05;
 const FOLLOW_CAMERA_BETA = 1.08;
 const FOLLOW_CAMERA_RADIUS = 13;
 const COUNTDOWN_CAMERA_RADIUS = 11.5;
 const COUNTDOWN_MOUSE_TURN_DEG_PER_PX = 0.35;
+const ELIMINATION_FALL_DURATION_MS = 1100;
 
 function normalizeDegrees(value: number) {
   return ((value % 360) + 360) % 360;
+}
+
+function shortestAngleDeltaDeg(target: number, current: number) {
+  let delta = normalizeDegrees(target) - normalizeDegrees(current);
+  if (delta > 180) delta -= 360;
+  if (delta < -180) delta += 360;
+  return delta;
 }
 
 /* ------------------------------------------------------------------ */
@@ -209,7 +219,6 @@ class GameScene {
 
   private playerId: string;
   private disposed = false;
-  private lobbyTime = 0;
   private lastPhase: string = "";
   private lastPosSendTime: number = 0;
   private cameraControlsAttached = true;
@@ -225,12 +234,20 @@ class GameScene {
   // Lobby WASD state
   private lobbyKeys = { w: false, a: false, s: false, d: false };
   private lobbyPos: { x: number; z: number } | null = null;
+  private lobbyDirection: number | null = null;
+  private lastLobbyMoveAt: number = 0;
   private lobbyKeyHandler: ((e: KeyboardEvent) => void) | null = null;
   private lobbyKeyUpHandler: ((e: KeyboardEvent) => void) | null = null;
 
   // Map shrinking tracking
   private renderedMapLength: number = 0;
   private renderedMapWidth: number = 0;
+  private platformBaseLength: number = 0;
+  private platformBaseWidth: number = 0;
+  private platformScaleX: number = 1;
+  private platformScaleZ: number = 1;
+  private platformTargetScaleX: number = 1;
+  private platformTargetScaleZ: number = 1;
 
   // Stage (spectator area from environment GLB)
   private stageCenter: Vector3 | null = null;
@@ -280,7 +297,7 @@ class GameScene {
     this.camera.keysRight = [];
 
     this.countdownPointerDownHandler = (e: PointerEvent) => {
-      if (useGameStore.getState().phase !== "countdown") return;
+      if (!this.canCurrentPlayerAim()) return;
       this.countdownPointerActive = true;
       this.lastCountdownPointerX = e.clientX;
     };
@@ -291,9 +308,15 @@ class GameScene {
       this.lastCountdownPointerX = e.clientX;
       if (Math.abs(dx) < 0.1) return;
 
+      if (!this.canCurrentPlayerAim()) {
+        this.countdownPointerActive = false;
+        this.lastCountdownPointerX = null;
+        return;
+      }
+
       const store = useGameStore.getState();
       const nextAimDirection = normalizeDegrees(
-        store.aimDirection + dx*COUNTDOWN_MOUSE_TURN_DEG_PER_PX,
+        store.aimDirection + dx * COUNTDOWN_MOUSE_TURN_DEG_PER_PX,
       );
       store.setAimDirection(nextAimDirection);
 
@@ -462,6 +485,7 @@ class GameScene {
 
   private buildPlatform(mapLength: number, mapWidth: number) {
     this.platformRoot = new TransformNode("platform", this.scene);
+    this.platformRoot.scaling = new Vector3(1, 1, 1);
 
     if (this.mapBlockTemplate && this.mapBlockTemplate.length > 0) {
       // MapBlock.glb is 2x2 units (x: -1..1, z: -1..1)
@@ -583,6 +607,52 @@ class GameScene {
     underside.parent = this.platformRoot;
   }
 
+  private getStageCenter(gs: import("@/lib/types").GameState) {
+    if (this.stageCenter) return this.stageCenter;
+    return new Vector3(-(gs.map.length / 2) - 8, this.stageY, 0);
+  }
+
+  private stageLocalToWorld(
+    local: { x: number; z: number } | undefined,
+    gs: import("@/lib/types").GameState,
+  ) {
+    const stageCenter = this.getStageCenter(gs);
+    return new Vector3(
+      stageCenter.x + (local?.x ?? 0),
+      this.stageY,
+      stageCenter.z + (local?.z ?? 0),
+    );
+  }
+
+  private clampStageLocalPosition(local: { x: number; z: number }) {
+    const margin = 0.55;
+    return {
+      x: Math.max(
+        -this.stageHalfX + margin,
+        Math.min(this.stageHalfX - margin, local.x),
+      ),
+      z: Math.max(
+        -this.stageHalfZ + margin,
+        Math.min(this.stageHalfZ - margin, local.z),
+      ),
+    };
+  }
+
+  private resolvePenguinWorldPosition(
+    penguin: import("@/lib/types").Penguin,
+    gs: import("@/lib/types").GameState,
+  ) {
+    if (penguin.zone === "stage") {
+      return this.stageLocalToWorld(penguin.stage_position, gs);
+    }
+
+    return new Vector3(
+      penguin.position.x - gs.map.length / 2,
+      0.5,
+      penguin.position.z - gs.map.width / 2,
+    );
+  }
+
   private async loadEnvironment(mapType: string) {
     const glbPath = mapToEnvironmentGlb(mapType);
     try {
@@ -651,9 +721,6 @@ class GameScene {
   }
 
   private async loadPenguins(gs: import("@/lib/types").GameState) {
-    const mapCenterX = gs.map.length / 2;
-    const mapCenterZ = gs.map.width / 2;
-
     for (const [id, penguin] of Object.entries(gs.players)) {
       const templateMeshes = await this.loadSkin(penguin.skin);
       if (templateMeshes.length === 0) continue;
@@ -661,11 +728,8 @@ class GameScene {
       const isCurrentPlayer = id === this.playerId;
       const root = new TransformNode(`penguin_${id}`, this.scene);
 
-      // Position from server (map coordinates → world coordinates)
-      const cx = penguin.position.x - mapCenterX;
-      const cz = penguin.position.z - mapCenterZ;
-      const y = 0.5;
-      root.position = new Vector3(cx, y, cz);
+      const worldPosition = this.resolvePenguinWorldPosition(penguin, gs);
+      root.position = worldPosition.clone();
 
       // Clone meshes — skip meshes whose parent is another template mesh
       // (they'll be auto-cloned by Mesh.clone), but DO clone meshes parented
@@ -735,14 +799,17 @@ class GameScene {
         root,
         meshes: clonedMeshes,
         arrow,
-        interpFrom: new Vector3(cx, y, cz),
-        interpTo: new Vector3(cx, y, cz),
+        interpFrom: worldPosition.clone(),
+        interpTo: worldPosition.clone(),
         interpT: 1,
-        lastX: cx,
-        lastZ: cz,
-        lastY: y,
+        lastX: worldPosition.x,
+        lastZ: worldPosition.z,
+        lastY: worldPosition.y,
         currentRotY: initRotY,
         isEliminated: false,
+        fallStartAt: null,
+        fallOrigin: null,
+        fallStageTarget: null,
       });
       this.pendingPenguinLoads.delete(id);
     }
@@ -757,8 +824,34 @@ class GameScene {
     }
     this.mapTiles = [];
     this.buildPlatform(newLength, newWidth);
+    this.platformBaseLength = newLength;
+    this.platformBaseWidth = newWidth;
+    this.platformScaleX = 1;
+    this.platformScaleZ = 1;
+    this.platformTargetScaleX = 1;
+    this.platformTargetScaleZ = 1;
     this.renderedMapLength = newLength;
     this.renderedMapWidth = newWidth;
+  }
+
+  private canCurrentPlayerAim() {
+    const store = useGameStore.getState();
+    const penguin = store.gameState?.players[this.playerId];
+    return (
+      store.phase === "countdown" &&
+      !!penguin &&
+      penguin.eliminated === 0 &&
+      penguin.zone !== "stage"
+    );
+  }
+
+  private setPlatformTargetSize(length: number, width: number) {
+    this.renderedMapLength = length;
+    this.renderedMapWidth = width;
+    this.platformTargetScaleX =
+      this.platformBaseLength > 0 ? length / this.platformBaseLength : 1;
+    this.platformTargetScaleZ =
+      this.platformBaseWidth > 0 ? width / this.platformBaseWidth : 1;
   }
 
   /* ── Per-frame update ── */
@@ -771,9 +864,16 @@ class GameScene {
     const dt = this.engine.getDeltaTime() / 1000; // seconds
     const mapCenterX = gs.map.length / 2;
     const mapCenterZ = gs.map.width / 2;
+    const localPlayer = gs.players[this.playerId];
+    const stageMovementActive = !!localPlayer && localPlayer.zone === "stage";
+    const localPlayerOnStage =
+      !!localPlayer && localPlayer.zone === "stage" && localPlayer.eliminated > 0;
 
     const wantsCameraControls =
-      phase === "lobby" || phase === "animating" || phase === "playing";
+      phase === "lobby" ||
+      phase === "animating" ||
+      phase === "playing" ||
+      (phase === "countdown" && localPlayerOnStage);
     if (wantsCameraControls !== this.cameraControlsAttached) {
       const canvas = this.engine.getRenderingCanvas();
       if (canvas) {
@@ -786,40 +886,57 @@ class GameScene {
       this.cameraControlsAttached = wantsCameraControls;
     }
 
-    // Detect map shrink → rebuild platform
+    // Grow/reset maps by rebuilding geometry; shrink active maps by animating scale.
     if (
       this.renderedMapLength > 0 &&
       (gs.map.length !== this.renderedMapLength ||
         gs.map.width !== this.renderedMapWidth)
     ) {
-      this.rebuildPlatform(gs.map.length, gs.map.width);
+      const growsOrResets =
+        phase === "lobby" ||
+        gs.map.length > this.renderedMapLength ||
+        gs.map.width > this.renderedMapWidth ||
+        this.platformBaseLength === 0 ||
+        this.platformBaseWidth === 0;
+
+      if (growsOrResets) {
+        this.rebuildPlatform(gs.map.length, gs.map.width);
+      } else {
+        this.setPlatformTargetSize(gs.map.length, gs.map.width);
+      }
     }
 
-    // Reset lobbyPos when leaving lobby
-    if (this.lastPhase === "lobby" && phase !== "lobby") {
+    if (this.platformRoot) {
+      const blend = 1 - Math.exp(-8 * dt);
+      this.platformScaleX += (this.platformTargetScaleX - this.platformScaleX) * blend;
+      this.platformScaleZ += (this.platformTargetScaleZ - this.platformScaleZ) * blend;
+      this.platformRoot.scaling.x = this.platformScaleX;
+      this.platformRoot.scaling.z = this.platformScaleZ;
+    }
+
+    // Reset predicted stage motion once the local player is back on the map.
+    if (this.lobbyPos !== null && !stageMovementActive) {
       this.lobbyPos = null;
+      this.lobbyDirection = null;
+      this.lastLobbyMoveAt = 0;
     }
 
-    // Lobby phase: WASD movement on the map
-    if (phase === "lobby") {
-      this.lobbyTime += dt;
-
-      // Initialize lobbyPos from server position
+    // Stage movement: lobby walkers and knocked-out spectators share the same area.
+    if (stageMovementActive) {
+      // Initialize predicted stage motion from authoritative server state.
       if (this.lobbyPos === null) {
         const myPenguin = gs.players[this.playerId];
-        if (myPenguin) {
-          this.lobbyPos = { x: myPenguin.position.x, z: myPenguin.position.z };
-        } else {
-          this.lobbyPos = { x: gs.map.length / 2, z: gs.map.width / 2 };
-        }
+        this.lobbyPos = {
+          x: myPenguin?.stage_position?.x ?? 0,
+          z: myPenguin?.stage_position?.z ?? 0,
+        };
+        this.lobbyDirection = myPenguin?.direction ?? 0;
       }
-      const myPenguin = gs.players[this.playerId];
+      const myPenguin = localPlayer;
 
-      const LOBBY_SPEED = 8;
-      const mapLen = gs.map.length;
-      const mapWid = gs.map.width;
+      const stageSpeed = myPenguin?.eliminated > 0 ? 7 : 8;
 
-      // Camera-relative forward/right in XZ
+      // Camera-relative forward/right on the stage plane
       const camAlpha = this.camera.alpha;
       const fwdX = -Math.cos(camAlpha);
       const fwdZ = -Math.sin(camAlpha);
@@ -846,36 +963,52 @@ class GameScene {
       }
 
       const len = Math.hypot(moveX, moveZ);
+      const now = performance.now();
       if (len > 0) {
-        moveX = (moveX / len) * LOBBY_SPEED * dt;
-        moveZ = (moveZ / len) * LOBBY_SPEED * dt;
-        this.lobbyPos.x = Math.max(
-          1,
-          Math.min(mapLen - 1, this.lobbyPos.x + moveX),
-        );
-        this.lobbyPos.z = Math.max(
-          1,
-          Math.min(mapWid - 1, this.lobbyPos.z + moveZ),
-        );
+        moveX = (moveX / len) * stageSpeed * dt;
+        moveZ = (moveZ / len) * stageSpeed * dt;
+        this.lobbyPos = this.clampStageLocalPosition({
+          x: this.lobbyPos.x + moveX,
+          z: this.lobbyPos.z + moveZ,
+        });
+        this.lastLobbyMoveAt = now;
       }
 
       let moveDirection = myPenguin?.direction ?? 0;
       if (len > 0) {
         moveDirection =
           (((Math.atan2(moveZ, moveX) * 180) / Math.PI) + 360) % 360;
+        this.lobbyDirection = moveDirection;
       }
 
       if (myPenguin) {
-        const authDx = myPenguin.position.x - this.lobbyPos.x;
-        const authDz = myPenguin.position.z - this.lobbyPos.z;
-        if (len === 0 || Math.hypot(authDx, authDz) > 1.5) {
-          this.lobbyPos.x = myPenguin.position.x;
-          this.lobbyPos.z = myPenguin.position.z;
+        const authPos = {
+          x: myPenguin.stage_position?.x ?? 0,
+          z: myPenguin.stage_position?.z ?? 0,
+        };
+        const authDx = authPos.x - this.lobbyPos.x;
+        const authDz = authPos.z - this.lobbyPos.z;
+        const authDistance = Math.hypot(authDx, authDz);
+        const authDirection = myPenguin.direction ?? 0;
+        const recentlyMoved = now - this.lastLobbyMoveAt < 160;
+
+        if (len === 0 && !recentlyMoved) {
+          const correctionBlend = 1 - Math.exp(-14 * dt);
+          this.lobbyPos.x += authDx * correctionBlend;
+          this.lobbyPos.z += authDz * correctionBlend;
+          const currentDir = this.lobbyDirection ?? authDirection;
+          this.lobbyDirection = normalizeDegrees(
+            currentDir +
+              shortestAngleDeltaDeg(authDirection, currentDir) * correctionBlend,
+          );
+        } else if (authDistance > 6) {
+          this.lobbyPos.x = authPos.x;
+          this.lobbyPos.z = authPos.z;
+          this.lobbyDirection = authDirection;
         }
       }
 
       // Send position to server (throttled to ~30/sec)
-      const now = performance.now();
       if (len > 0 && now - this.lastPosSendTime > 33) {
         this.lastPosSendTime = now;
         sendPosition({
@@ -886,18 +1019,13 @@ class GameScene {
       }
 
       // Camera follows player
-      const camTargetPlayer = myPenguin ?? gs.players[this.playerId];
-      const camTarget = new Vector3(
-        (camTargetPlayer?.position.x ?? this.lobbyPos.x) - mapCenterX,
-        1.5,
-        (camTargetPlayer?.position.z ?? this.lobbyPos.z) - mapCenterZ,
-      );
+      const camTarget = this.stageLocalToWorld(this.lobbyPos, gs);
+      camTarget.y = this.stageY + 1;
       const blend = 1 - Math.exp(-5 * dt);
       this.camera.target.x += (camTarget.x - this.camera.target.x) * blend;
       this.camera.target.y += (camTarget.y - this.camera.target.y) * blend;
       this.camera.target.z += (camTarget.z - this.camera.target.z) * blend;
-      // Soft radius blend — don't force beta so player can look up/down freely
-      const targetRadius = 15;
+      const targetRadius = 12;
       this.camera.radius += (targetRadius - this.camera.radius) * blend * 0.3;
 
       // Fall through to penguin update loop (no return)
@@ -909,13 +1037,38 @@ class GameScene {
       if (!penguin) continue;
 
       const isCurrentPlayer = id === this.playerId;
+      const targetWorld =
+        stageMovementActive && isCurrentPlayer && this.lobbyPos
+          ? this.stageLocalToWorld(this.lobbyPos, gs)
+          : this.resolvePenguinWorldPosition(penguin, gs);
+      const cx = targetWorld.x;
+      const cz = targetWorld.z;
+      const y = targetWorld.y;
 
-      // All players use server positions (map coordinates → world)
-      const cx = penguin.position.x - mapCenterX;
-      const cz = penguin.position.z - mapCenterZ;
-      const y = 0.5;
+      if (penguin.eliminated > 0 && !tracker.isEliminated) {
+        tracker.isEliminated = true;
+        tracker.fallStartAt = performance.now();
+        tracker.fallOrigin = tracker.root.position.clone();
+        tracker.fallStageTarget =
+          penguin.zone === "stage" ? targetWorld.clone() : null;
+        for (const m of tracker.meshes) {
+          if (m.material) {
+            const clonedMat = m.material.clone(`${id}_mat_elim`);
+            if (clonedMat) {
+              clonedMat.alpha = 0.35;
+              if ("needDepthPrePass" in clonedMat) {
+                (
+                  clonedMat as unknown as Record<string, unknown>
+                ).needDepthPrePass = true;
+              }
+              m.material = clonedMat;
+            }
+          }
+        }
+        tracker.arrow.setEnabled(false);
+      }
 
-      if (phase === "lobby") {
+      if ((stageMovementActive && isCurrentPlayer) || phase === "lobby") {
         tracker.root.position.set(cx, y, cz);
         tracker.interpFrom.set(cx, y, cz);
         tracker.interpTo.set(cx, y, cz);
@@ -936,62 +1089,56 @@ class GameScene {
         tracker.lastY = y;
       }
 
-      // Smooth position interpolation
-      if (phase !== "lobby" && tracker.interpT < 1) {
-        tracker.interpT = Math.min(
-          1,
-          tracker.interpT + dt / SERVER_INTERP_DURATION,
-        );
+      const fallElapsed =
+        tracker.fallStartAt === null ? null : performance.now() - tracker.fallStartAt;
+      const isFalling =
+        fallElapsed !== null && fallElapsed < ELIMINATION_FALL_DURATION_MS;
+
+      if (phase !== "lobby" && !isFalling && tracker.interpT < 1) {
+        tracker.interpT = Math.min(1, tracker.interpT + dt / SERVER_INTERP_DURATION);
         const t = tracker.interpT * tracker.interpT * (3 - 2 * tracker.interpT);
-        Vector3.LerpToRef(
-          tracker.interpFrom,
-          tracker.interpTo,
-          t,
-          tracker.root.position,
-        );
-      } else if (phase !== "lobby") {
-        // Gently hold at target
+        Vector3.LerpToRef(tracker.interpFrom, tracker.interpTo, t, tracker.root.position);
+      } else if (phase !== "lobby" && !isFalling) {
         const blend = 1 - Math.exp(-10 * dt);
-        tracker.root.position.x +=
-          (tracker.interpTo.x - tracker.root.position.x) * blend;
-        tracker.root.position.y +=
-          (tracker.interpTo.y - tracker.root.position.y) * blend;
-        tracker.root.position.z +=
-          (tracker.interpTo.z - tracker.root.position.z) * blend;
+        tracker.root.position.x += (tracker.interpTo.x - tracker.root.position.x) * blend;
+        tracker.root.position.y += (tracker.interpTo.y - tracker.root.position.y) * blend;
+        tracker.root.position.z += (tracker.interpTo.z - tracker.root.position.z) * blend;
       }
 
-      // Eliminated player transparency
-      if (penguin.eliminated > 0 && !tracker.isEliminated) {
-        tracker.isEliminated = true;
-        for (const m of tracker.meshes) {
-          if (m.material) {
-            const clonedMat = m.material.clone(`${id}_mat_elim`);
-            if (clonedMat) {
-              clonedMat.alpha = 0.35;
-              if ("needDepthPrePass" in clonedMat) {
-                (
-                  clonedMat as unknown as Record<string, unknown>
-                ).needDepthPrePass = true;
-              }
-              m.material = clonedMat;
-            }
-          }
+      if (isFalling && tracker.fallOrigin) {
+        const t = Math.min(1, fallElapsed! / ELIMINATION_FALL_DURATION_MS);
+        tracker.root.position.x = tracker.fallOrigin.x;
+        tracker.root.position.z = tracker.fallOrigin.z;
+        tracker.root.position.y = tracker.fallOrigin.y - 8 * t * t;
+      } else if (tracker.fallStartAt !== null) {
+        tracker.fallStartAt = null;
+        tracker.fallOrigin = null;
+        if (tracker.fallStageTarget) {
+          tracker.root.position.copyFrom(tracker.fallStageTarget);
+          tracker.interpFrom.copyFrom(tracker.fallStageTarget);
+          tracker.interpTo.copyFrom(tracker.fallStageTarget);
+          tracker.lastX = tracker.fallStageTarget.x;
+          tracker.lastZ = tracker.fallStageTarget.z;
+          tracker.lastY = tracker.fallStageTarget.y;
+          tracker.interpT = 1;
+          tracker.fallStageTarget = null;
         }
-        tracker.arrow.setEnabled(false);
       }
 
       // Rotation: penguin model faces +Z. rotation.y = θ maps +Z to (sin(θ), cos(θ))
       // Physics dir 0° = +X → targetRotY = -rad + π/2
       const dir =
-        isCurrentPlayer && phase === "countdown"
+        isCurrentPlayer && stageMovementActive && this.lobbyDirection !== null
+          ? this.lobbyDirection
+          : isCurrentPlayer && phase === "countdown"
           ? store.aimDirection
-          : penguin.direction;
+          : !isCurrentPlayer && phase === "countdown"
+            ? penguin.public_direction ?? penguin.direction
+            : penguin.direction;
       const rad = (dir * Math.PI) / 180;
       const targetRotY = -rad + Math.PI / 2;
 
       if (phase === "lobby") {
-        tracker.currentRotY = targetRotY;
-      } else if (!isCurrentPlayer && phase === "countdown") {
         tracker.currentRotY = targetRotY;
       } else {
         let diff = targetRotY - tracker.currentRotY;
@@ -1008,11 +1155,14 @@ class GameScene {
         tracker.arrow.setEnabled(false);
       } else {
         const showArrow =
-          (phase === "countdown" || phase === "animating") &&
+          ((phase === "countdown" && isCurrentPlayer) || phase === "animating") &&
           penguin.eliminated === 0;
         tracker.arrow.setEnabled(showArrow);
         if (showArrow) {
-          const power = isCurrentPlayer ? store.aimPower : 6;
+          const power =
+            phase === "countdown"
+              ? store.aimPower
+              : store.roundMoves?.[id]?.power ?? (isCurrentPlayer ? store.aimPower : 6);
           const scale = 0.6 + (power / 10) * 1.5;
           tracker.arrow.scaling.z = scale;
           tracker.arrow.position.y =
@@ -1023,7 +1173,7 @@ class GameScene {
 
     // Camera follow during gameplay (skip during lobby — handled above)
     if (phase !== "lobby") {
-      const player = gs.players[this.playerId];
+      const player = localPlayer;
       const playerTracker = this.penguins.get(this.playerId);
       if (player && player.eliminated === 0) {
         const target = playerTracker
@@ -1057,6 +1207,29 @@ class GameScene {
           this.camera.radius +=
             (FOLLOW_CAMERA_RADIUS - this.camera.radius) * blend * 0.35;
         }
+      } else if (player && player.zone === "stage") {
+        const stageTarget = playerTracker
+          ? new Vector3(
+              playerTracker.root.position.x,
+              playerTracker.root.position.y + 1.25,
+              playerTracker.root.position.z,
+            )
+          : this.resolvePenguinWorldPosition(player, gs).add(
+              new Vector3(0, 1.25, 0),
+            );
+        const blend = 1 - Math.exp(-3 * dt);
+        this.camera.target.x += (stageTarget.x - this.camera.target.x) * blend;
+        this.camera.target.y += (stageTarget.y - this.camera.target.y) * blend;
+        this.camera.target.z += (stageTarget.z - this.camera.target.z) * blend;
+
+        const desiredAlpha =
+          Math.atan2(-stageTarget.z, -stageTarget.x) - Math.PI;
+        let alphaDiff = desiredAlpha - this.camera.alpha;
+        while (alphaDiff > Math.PI) alphaDiff -= 2 * Math.PI;
+        while (alphaDiff < -Math.PI) alphaDiff += 2 * Math.PI;
+        this.camera.alpha += alphaDiff * (1 - Math.exp(-2.5 * dt));
+        this.camera.beta += (0.98 - this.camera.beta) * blend * 0.75;
+        this.camera.radius += (18 - this.camera.radius) * blend * 0.65;
       } else {
         // Spectator: look at center
         const blend = 1 - Math.exp(-2 * dt);
@@ -1091,20 +1264,14 @@ class GameScene {
       return;
     this.pendingPenguinLoads.add(id);
 
-    const mapCenterX = gs.map.length / 2;
-    const mapCenterZ = gs.map.width / 2;
-
     const templateMeshes = await this.loadSkin(penguin.skin);
     if (templateMeshes.length === 0) return;
 
     const isCurrentPlayer = id === this.playerId;
     const root = new TransformNode(`penguin_${id}`, this.scene);
 
-    const phase = useGameStore.getState().phase;
-    const cx = penguin.position.x - mapCenterX;
-    const cz = penguin.position.z - mapCenterZ;
-    const y = 0.5;
-    root.position = new Vector3(cx, y, cz);
+    const worldPosition = this.resolvePenguinWorldPosition(penguin, gs);
+    root.position = worldPosition.clone();
 
     const clonedMeshes: AbstractMesh[] = [];
     const templateSet = new Set(templateMeshes);
@@ -1143,14 +1310,17 @@ class GameScene {
       root,
       meshes: clonedMeshes,
       arrow,
-      interpFrom: new Vector3(cx, y, cz),
-      interpTo: new Vector3(cx, y, cz),
+      interpFrom: worldPosition.clone(),
+      interpTo: worldPosition.clone(),
       interpT: 1,
-      lastX: cx,
-      lastZ: cz,
-      lastY: y,
+      lastX: worldPosition.x,
+      lastZ: worldPosition.z,
+      lastY: worldPosition.y,
       currentRotY: -rad + Math.PI / 2,
       isEliminated: false,
+      fallStartAt: null,
+      fallOrigin: null,
+      fallStageTarget: null,
     });
     this.pendingPenguinLoads.delete(id);
   }

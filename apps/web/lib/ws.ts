@@ -7,6 +7,7 @@ import type {
   PlayerEliminatedPayload,
   GameEndedPayload,
   GameState,
+  RematchCreatedPayload,
 } from "./types";
 import { useGameStore } from "./game-store";
 import { API_BASE } from "./constants";
@@ -237,6 +238,10 @@ export function startGame() {
   sendEvent("start_game");
 }
 
+export function playAgain() {
+  sendEvent("play_again");
+}
+
 export function getState() {
   sendEvent("get_state");
 }
@@ -284,6 +289,12 @@ function handleServerEvent(msg: OutgoingMessage) {
     }
     case "player_move_ack": {
       store.handleMoveAck();
+      break;
+    }
+    case "rematch_created": {
+      flushRealtimeState();
+      const payload = msg.data as RematchCreatedPayload;
+      store.handleRematchCreated(payload);
       break;
     }
     case "players_position_update": {

@@ -104,17 +104,21 @@ func CreateGameHandler(c *fiber.Ctx) error {
 	}
 
 	hostPlayer := entities.Penguin{
-		Id:           hostId,
-		PlayerSecret: hostSecret,
-		Type:         playerType,
-		Skin:         skin,
-		Position:     pos,
-		Mass:         physics.NormalMass,
-		Accel:        0,
-		Velocity:     0,
-		Direction:    0,
-		Eliminated:   0,
+		Id:              hostId,
+		PlayerSecret:    hostSecret,
+		Type:            playerType,
+		Skin:            skin,
+		Position:        pos,
+		StagePosition:   entities.Position{},
+		Zone:            entities.PenguinZoneStage,
+		Mass:            physics.NormalMass,
+		Accel:           0,
+		Velocity:        0,
+		Direction:       0,
+		PublicDirection: 0,
+		Eliminated:      0,
 	}
+	hostPlayer.StagePosition = defaultStagePositionForIndex(0)
 
 	game.GameState.HostId = hostId
 
