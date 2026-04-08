@@ -284,22 +284,29 @@ func WSHandler(c *websocket.Conn) {
 	positionUpdates := make(chan outgoing, 1)
 	var lastPositionFrameMu sync.Mutex
 	lastPositionFrame := int64(-1)
+	lastPositionTimeMs := int64(-1)
 
 	shouldQueuePositionFrame := func(gs *physics.GameState) bool {
 		if gs == nil {
 			return true
 		}
 		frame := gs.ServerFrame
-		if frame <= 0 {
+		timeMs := gs.ServerTimeMs
+		if frame <= 0 && timeMs <= 0 {
 			return true
 		}
 
 		lastPositionFrameMu.Lock()
 		defer lastPositionFrameMu.Unlock()
-		if frame <= lastPositionFrame {
+		if frame <= lastPositionFrame && timeMs <= lastPositionTimeMs {
 			return false
 		}
-		lastPositionFrame = frame
+		if frame > lastPositionFrame {
+			lastPositionFrame = frame
+		}
+		if timeMs > lastPositionTimeMs {
+			lastPositionTimeMs = timeMs
+		}
 		return true
 	}
 
