@@ -236,6 +236,7 @@ class GameScene {
   private lobbyPos: { x: number; z: number } | null = null;
   private lobbyDirection: number | null = null;
   private lastLobbyMoveAt: number = 0;
+  private lobbyWasMoving = false;
   private lobbyKeyHandler: ((e: KeyboardEvent) => void) | null = null;
   private lobbyKeyUpHandler: ((e: KeyboardEvent) => void) | null = null;
 
@@ -919,6 +920,7 @@ class GameScene {
       this.lobbyPos = null;
       this.lobbyDirection = null;
       this.lastLobbyMoveAt = 0;
+      this.lobbyWasMoving = false;
     }
 
     // Stage movement: lobby walkers and knocked-out spectators share the same area.
@@ -964,6 +966,9 @@ class GameScene {
 
       const len = Math.hypot(moveX, moveZ);
       const now = performance.now();
+      const wasMoving = this.lobbyWasMoving;
+      const startedMoving = len > 0 && !wasMoving;
+      const stoppedMoving = len === 0 && wasMoving;
       if (len > 0) {
         moveX = (moveX / len) * stageSpeed * dt;
         moveZ = (moveZ / len) * stageSpeed * dt;
@@ -1008,15 +1013,19 @@ class GameScene {
         }
       }
 
-      // Send position to server (throttled to ~30/sec)
-      if (len > 0 && now - this.lastPosSendTime > 33) {
+      // Send stage position on movement start, while moving, and once more on stop.
+      if (
+        (len > 0 && (startedMoving || now - this.lastPosSendTime > 33)) ||
+        stoppedMoving
+      ) {
         this.lastPosSendTime = now;
         sendPosition({
           x: this.lobbyPos.x,
           z: this.lobbyPos.z,
-          direction: moveDirection,
+          direction: this.lobbyDirection ?? moveDirection,
         });
       }
+      this.lobbyWasMoving = len > 0;
 
       // Camera follows player
       const camTarget = this.stageLocalToWorld(this.lobbyPos, gs);

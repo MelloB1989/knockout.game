@@ -17,10 +17,11 @@ var ctx = context.Background()
 var liveGames sync.Map
 
 type Game struct {
-	Id        string             `json:"id"`
-	GameState *physics.GameState `json:"game_state"`
-	CreatedAt time.Time          `json:"created_at"`
-	rc        *redis.Client
+	Id            string             `json:"id"`
+	GameState     *physics.GameState `json:"game_state"`
+	CreatedAt     time.Time          `json:"created_at"`
+	RematchGameId string             `json:"rematch_game_id,omitempty"`
+	rc            *redis.Client
 }
 
 func CreateGame(mapType string, l, w int) (*Game, error) {

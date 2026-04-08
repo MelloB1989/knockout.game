@@ -91,7 +91,6 @@ var runningGames sync.Map
 var gameLocks sync.Map
 var localPositionSubscribers sync.Map
 var redisPositionPublishers sync.Map
-var rematchGames sync.Map
 
 type positionSubscriberSet struct {
 	mu   sync.RWMutex
@@ -1005,8 +1004,13 @@ func createOrLoadRematch(game *repository.Game) (*repository.Game, error) {
 		return nil, errInvalidGameState
 	}
 
-	if existingId, ok := rematchGames.Load(game.Id); ok {
-		if rematch, err := repository.LoadGameFresh(existingId.(string)); err == nil {
+	freshGame, err := repository.LoadGameFresh(game.Id)
+	if err == nil && freshGame != nil {
+		game = freshGame
+	}
+
+	if game.RematchGameId != "" {
+		if rematch, err := repository.LoadGameFresh(game.RematchGameId); err == nil {
 			return rematch, nil
 		}
 	}
@@ -1054,7 +1058,11 @@ func createOrLoadRematch(game *repository.Game) (*repository.Game, error) {
 		return nil, err
 	}
 
-	rematchGames.Store(game.Id, rematch.Id)
+	game.RematchGameId = rematch.Id
+	if _, err := game.UpdateGame(); err != nil {
+		return nil, err
+	}
+
 	return rematch, nil
 }
 
