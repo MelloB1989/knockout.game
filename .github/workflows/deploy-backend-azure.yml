@@ -151,6 +151,41 @@ jobs:
           kubelogin convert-kubeconfig -l azurecli
           kubectl cluster-info
 
+      - name: Create backend .env from cluster secret
+        run: |
+          set -euo pipefail
+          SECRET_NAME="knockout-server-env"
+
+          REDIS_URL_B64=$(kubectl get secret "$SECRET_NAME" -o jsonpath="{.data.REDIS_URL}")
+          JWT_SECRET_B64=$(kubectl get secret "$SECRET_NAME" -o jsonpath="{.data.JWT_SECRET}")
+          DATABASE_URL_B64=$(kubectl get secret "$SECRET_NAME" -o jsonpath="{.data.DATABASE_URL}")
+
+          if [ -z "$REDIS_URL_B64" ] || [ -z "$JWT_SECRET_B64" ] || [ -z "$DATABASE_URL_B64" ]; then
+            echo "::error::Missing REDIS_URL, JWT_SECRET, or DATABASE_URL in secret $SECRET_NAME"
+            exit 1
+          fi
+
+          export REDIS_URL_B64 JWT_SECRET_B64 DATABASE_URL_B64
+          python - <<'PY'
+          import base64, os, pathlib
+
+          def decode(val: str) -> str:
+              return base64.b64decode(val).decode("utf-8")
+
+          redis_url = decode(os.environ["REDIS_URL_B64"])
+          jwt_secret = decode(os.environ["JWT_SECRET_B64"])
+          database_url = decode(os.environ["DATABASE_URL_B64"])
+
+          env_path = pathlib.Path("services/server/.env")
+          env_path.write_text(
+              f'REDIS_URL="{redis_url}"\n'
+              f'JWT_SECRET="{jwt_secret}"\n'
+              f'DATABASE_URL="{database_url}"\n'
+              f'ENV="PROD"\n'
+          )
+          print(f"Wrote {env_path}")
+          PY
+
       - name: Build and Push Docker image
         uses: docker/build-push-action@v6
         with:
