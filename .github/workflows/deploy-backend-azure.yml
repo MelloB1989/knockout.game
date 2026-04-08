@@ -167,15 +167,18 @@ jobs:
       - name: Run Database Migrations
         run: |
           set -euo pipefail
-          set -a
-          source services/server/.env
-          set +a
 
-          python - <<'PY'
-          import os
+          DATABASE_URL_B64=$(kubectl get secret knockout-server-env -o jsonpath="{.data.DATABASE_URL}")
+          if [ -z "$DATABASE_URL_B64" ]; then
+            echo "::error::DATABASE_URL not found in secret knockout-server-env"
+            exit 1
+          fi
+
+          DATABASE_URL_B64="$DATABASE_URL_B64" python - <<'PY'
+          import base64, os
           from urllib.parse import urlparse, parse_qs, unquote
 
-          url = os.environ["DATABASE_URL"]
+          url = base64.b64decode(os.environ["DATABASE_URL_B64"]).decode("utf-8")
           u = urlparse(url)
           q = parse_qs(u.query)
           sslmode = (q.get("sslmode", [""])[0] or "").lower()
@@ -186,7 +189,7 @@ jobs:
               f.write(f"DB_PORT={u.port or 5432}\n")
               f.write(f"DB_USER={unquote(u.username or '')}\n")
               f.write(f"DB_PASSWORD={unquote(u.password or '')}\n")
-              f.write(f"DB_NAME={u.path.lstrip('/')}\n")
+              f.write("DB_NAME=gaming\n")
               f.write(f"DB_SSL={db_ssl}\n")
           PY
 
