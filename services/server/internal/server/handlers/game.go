@@ -609,6 +609,13 @@ func WSHandler(c *websocket.Conn) {
 				game.GameState.Players[playerId] = player
 
 				game.GameState.CurrentMoves[playerId] = playerMove
+				if _, err := game.UpdateGame(); err != nil {
+					writeJSON(outgoing{
+						Event: repository.ErrorEvent,
+						Error: err.Error(),
+					})
+					return
+				}
 				writeJSON(outgoing{
 					Event: repository.PlayerMoveAck,
 					Data: moveAckPayload{
@@ -641,6 +648,13 @@ func WSHandler(c *websocket.Conn) {
 					player.PublicDirection = player.Direction
 				}
 				game.GameState.Players[playerId] = player
+				if _, err := game.UpdateGame(); err != nil {
+					writeJSON(outgoing{
+						Event: repository.ErrorEvent,
+						Error: err.Error(),
+					})
+					return
+				}
 				if err := publishPlayersPositionUpdate(game); err != nil {
 					writeJSON(outgoing{
 						Event: repository.ErrorEvent,
