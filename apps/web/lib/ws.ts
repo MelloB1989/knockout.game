@@ -18,6 +18,7 @@ let pendingRegistration: Partial<Penguin> | null = null;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
 let intentionalClose = false;
+let pendingPlayAgain = false;
 let positionApplyTimer: ReturnType<typeof setTimeout> | null = null;
 let positionQueue: GameState[] = [];
 let playbackClockOffsetMs: number | null = null;
@@ -133,6 +134,7 @@ function getWsBase() {
 
 export function connectToGame(gameId: string, token: string) {
   resetPositionPlayback();
+  pendingPlayAgain = false;
 
   // Close any existing connection cleanly
   if (ws) {
@@ -164,6 +166,11 @@ export function connectToGame(gameId: string, token: string) {
       // Already registered (e.g. host) — just fetch state
       sendEvent("get_state");
     }
+    // If play_again was requested while disconnected, send it now
+    if (pendingPlayAgain) {
+      pendingPlayAgain = false;
+      sendEvent("play_again");
+    }
   };
 
   ws.onmessage = (ev) => {
@@ -177,10 +184,8 @@ export function connectToGame(gameId: string, token: string) {
 
   ws.onclose = () => {
     resetPositionPlayback();
-    const phase = useGameStore.getState().phase;
     if (
       !intentionalClose &&
-      phase !== "ended" &&
       reconnectAttempts < MAX_RECONNECT_ATTEMPTS
     ) {
       reconnectAttempts++;
@@ -197,6 +202,7 @@ export function connectToGame(gameId: string, token: string) {
 
 export function disconnectFromGame() {
   intentionalClose = true;
+  pendingPlayAgain = false;
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
@@ -239,6 +245,10 @@ export function startGame() {
 }
 
 export function playAgain() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    pendingPlayAgain = true;
+    return;
+  }
   sendEvent("play_again");
 }
 
@@ -281,10 +291,7 @@ function handleServerEvent(msg: OutgoingMessage) {
     case "game_ended": {
       flushRealtimeState();
       const payload = msg.data as GameEndedPayload;
-      const gs =
-        (msg as { data?: GameEndedPayload; game_state?: GameState })
-          .game_state ?? null;
-      store.handleGameEnded(payload, gs);
+      store.handleGameEnded(payload, msg.game_state ?? null);
       break;
     }
     case "player_move_ack": {
@@ -306,6 +313,7 @@ function handleServerEvent(msg: OutgoingMessage) {
     }
     case "error": {
       console.error("[ws] server error:", msg.error);
+      useGameStore.getState().setRematchRequested(false);
       break;
     }
   }

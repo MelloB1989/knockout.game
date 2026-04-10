@@ -102,6 +102,7 @@ export interface OutgoingMessage {
   event: ServerEvent;
   data?: unknown;
   error?: string;
+  game_state?: GameState;
 }
 
 export interface CountdownPayload {

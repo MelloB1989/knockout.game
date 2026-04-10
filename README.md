@@ -20,6 +20,22 @@
 
 Knockout is a real-time multiplayer 3D game where players control penguins on a shrinking platform. Each round, players choose a direction and power level — then all penguins launch simultaneously, bouncing off each other. Fall off the edge and you're eliminated. The last penguin standing wins.
 
+## Screenshots
+
+<p align="center">
+  <img src="screenshots/home.png" alt="Home" width="720" />
+</p>
+
+<p align="center">
+  <img src="screenshots/create-page.png" alt="Create Game" width="360" />
+  <img src="screenshots/lobby.png" alt="Lobby" width="360" />
+</p>
+
+<p align="center">
+  <img src="screenshots/game.png" alt="Gameplay" width="360" />
+  <img src="screenshots/victory.png" alt="Victory" width="360" />
+</p>
+
 ## Tech Stack
 
 | Layer | Technology | Purpose |

@@ -45,9 +45,10 @@ const (
 )
 
 type outgoing struct {
-	Event repository.GameEvents `json:"event"`
-	Data  any                   `json:"data,omitempty"`
-	Error string                `json:"error,omitempty"`
+	Event     repository.GameEvents `json:"event"`
+	Data      any                   `json:"data,omitempty"`
+	Error     string                `json:"error,omitempty"`
+	GameState any                   `json:"game_state,omitempty"`
 }
 
 type incomingMessage struct {
@@ -446,15 +447,22 @@ func WSHandler(c *websocket.Conn) {
 			}
 
 			var data any
+			var maskedGS any
 			if event.GameState != nil && (event.Type == repository.GameState || event.Type == repository.PlayersPositionUpdate) {
 				data = maskGameStateForPlayer(event.GameState, playerId)
-			} else if len(event.Data) > 0 {
-				data = event.Data
+			} else {
+				if event.GameState != nil {
+					maskedGS = maskGameStateForPlayer(event.GameState, playerId)
+				}
+				if len(event.Data) > 0 {
+					data = event.Data
+				}
 			}
 
 			if !queueOutgoing(outgoing{
-				Event: event.Type,
-				Data:  data,
+				Event:     event.Type,
+				Data:      data,
+				GameState: maskedGS,
 			}) {
 				return
 			}

@@ -32,8 +32,40 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: "Knockout — Penguin Battle Royale",
-  description: "Knock your opponents off the platform. Last penguin standing wins.",
+  title: {
+    default: "Knockout — Penguin Battle Royale",
+    template: "%s | Knockout",
+  },
+  description:
+    "Real-time multiplayer 3D game where penguins battle on a shrinking platform. Choose your direction, launch, and knock opponents off the edge. Last penguin standing wins.",
+  keywords: [
+    "knockout",
+    "penguin",
+    "battle royale",
+    "multiplayer",
+    "3d game",
+    "browser game",
+    "real-time",
+    "party game",
+  ],
+  authors: [{ name: "Knockout" }],
+  openGraph: {
+    type: "website",
+    siteName: "Knockout",
+    title: "Knockout — Penguin Battle Royale",
+    description:
+      "Knock your opponents off the platform. Last penguin standing wins.",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Knockout — Penguin Battle Royale",
+    description:
+      "Knock your opponents off the platform. Last penguin standing wins.",
+  },
+  robots: {
+    index: true,
+    follow: true,
+  },
 };
 
 export default function RootLayout({
