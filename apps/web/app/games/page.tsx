@@ -61,22 +61,20 @@ export default function GamesPage() {
   const [loading, setLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
-    const [liveRes, pastRes] = await Promise.allSettled([
-      fetch(`${API_BASE}/v1/game/live`).then((r) => (r.ok ? r.json() : [])),
-      fetch(`${API_BASE}/v1/game/latest?limit=20`, { cache: "no-store" }).then((r) =>
-        r.ok ? r.json() : [],
-      ),
-    ]);
-    setLiveGames(
-      Array.isArray(liveRes.status === "fulfilled" ? liveRes.value : [])
-        ? (liveRes as PromiseFulfilledResult<LiveGame[]>).value
-        : [],
-    );
-    setPastGames(
-      Array.isArray(pastRes.status === "fulfilled" ? pastRes.value : [])
-        ? (pastRes as PromiseFulfilledResult<GameResult[]>).value
-        : [],
-    );
+    try {
+      const [liveRes, pastRes] = await Promise.allSettled([
+        fetch(`${API_BASE}/v1/game/live`).then((r) => (r.ok ? r.json() : [])),
+        fetch(`${API_BASE}/v1/game/latest?limit=20`, { cache: "no-store" }).then((r) =>
+          r.ok ? r.json() : [],
+        ),
+      ]);
+      const live = liveRes.status === "fulfilled" ? liveRes.value : [];
+      const past = pastRes.status === "fulfilled" ? pastRes.value : [];
+      setLiveGames(Array.isArray(live) ? live : []);
+      setPastGames(Array.isArray(past) ? past : []);
+    } catch {
+      // ignore fetch errors
+    }
     setLoading(false);
   }, []);
 
