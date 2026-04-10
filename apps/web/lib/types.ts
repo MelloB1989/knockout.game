@@ -65,7 +65,7 @@ export interface GameResultPlayerScore {
 export interface GameResult {
   id: string;
   player_scores: GameResultPlayerScore[];
-  rounds: number;
+  round: number;
   played_at: string;
 }
 

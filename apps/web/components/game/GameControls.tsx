@@ -243,22 +243,24 @@ export default function GameControls() {
           left: "50%",
           transform: "translateX(-50%)",
           bottom: "max(1rem, env(safe-area-inset-bottom))",
-          width: "min(30rem, calc(100vw - 1.5rem))",
+          width: "min(24rem, calc(100vw - 2rem))",
         }}
       >
         <div
-          className="rounded-2xl px-4 py-3 text-center backdrop-blur-md"
+          className="rounded-2xl px-5 py-3 text-center backdrop-blur-md"
           style={{
             background: "rgba(28, 24, 20, 0.85)",
             border: "1px solid rgba(255, 184, 0, 0.15)",
             boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
           }}
         >
-          <span className="select-none text-sm text-[var(--text-warm)] font-[family-name:var(--font-fredoka)] font-medium">
-            <span className="hidden sm:inline">WASD to walk on stage</span>
-            <span className="sm:hidden">Drag to move on stage</span>
-            <span className="text-[var(--text-muted)] ml-2">Drag to orbit camera</span>
-          </span>
+          <p className="select-none text-sm text-[var(--text-warm)] font-[family-name:var(--font-fredoka)] font-medium">
+            <span className="hidden sm:inline">WASD to walk</span>
+            <span className="sm:hidden">Drag to move</span>
+          </p>
+          <p className="select-none text-[10px] text-[var(--text-dim)] font-[family-name:var(--font-fredoka)] mt-1">
+            Drag to orbit camera
+          </p>
         </div>
       </div>
     );

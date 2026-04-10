@@ -116,7 +116,7 @@ export default function MobileJoystick({ visible }: Props) {
     <div
       className="absolute z-30 pointer-events-auto sm:hidden"
       style={{
-        left: "1.25rem",
+        right: "1.25rem",
         bottom: "max(5.5rem, calc(env(safe-area-inset-bottom) + 5.5rem))",
       }}
     >

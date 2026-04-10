@@ -17,7 +17,7 @@ type Games struct {
 	TableName    string        `json:"-" karma_table:"games"`
 	Id           string        `json:"id" karma:"primary"`
 	PlayerScores []PlayerScore `json:"player_scores" db:"player_scores"`
-	Rounds       int           `json:"rounds"`
+	Rounds       int           `json:"round"`
 	PlayedAt     time.Time     `json:"played_at"`
 }
 

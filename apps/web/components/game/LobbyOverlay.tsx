@@ -76,20 +76,20 @@ export default function LobbyOverlay({
   };
 
   return (
-    <div className="absolute inset-0 z-30 pointer-events-none px-3 py-3 sm:px-4 sm:py-4">
+    <div className="absolute inset-0 z-30 pointer-events-none">
       {/* Top section: Game code */}
       <div
         className="pointer-events-auto absolute left-3 top-3 space-y-2.5 sm:left-5 sm:top-5"
-        style={{ width: "min(22rem, calc(100vw - 1.5rem))" }}
+        style={{ width: "min(20rem, calc(100vw - 1.5rem))" }}
       >
-        <div className="rounded-2xl px-3.5 py-3 sm:px-4 backdrop-blur-md" style={cardStyle}>
+        <div className="rounded-2xl p-4 sm:p-5 backdrop-blur-md" style={cardStyle}>
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-[10px] uppercase tracking-widest text-[var(--text-muted)] font-[family-name:var(--font-fredoka)] font-semibold">
                 Game Code
               </p>
-              <p className="mt-1 text-xs leading-snug text-[var(--text-muted)] font-[family-name:var(--font-fredoka)]">
-                Share this to invite players
+              <p className="mt-1.5 text-xs leading-snug text-[var(--text-muted)] font-[family-name:var(--font-fredoka)]">
+                Share to invite players
               </p>
             </div>
             <div className="flex gap-1.5 shrink-0">
@@ -116,13 +116,13 @@ export default function LobbyOverlay({
             </div>
           </div>
           <div
-            className="mt-2.5 rounded-xl border px-3 py-2"
+            className="mt-3 rounded-xl px-4 py-2.5"
             style={{
               background: "rgba(15, 13, 10, 0.6)",
-              borderColor: "rgba(255, 184, 0, 0.1)",
+              border: "1px solid rgba(255, 184, 0, 0.1)",
             }}
           >
-            <code className="block overflow-hidden text-ellipsis whitespace-nowrap text-center font-[family-name:var(--font-bungee)] text-[1.6rem] sm:text-[2rem] tracking-[0.14em] text-[var(--accent-gold)]">
+            <code className="block text-center font-[family-name:var(--font-bungee)] text-2xl sm:text-3xl tracking-[0.14em] text-[var(--accent-gold)]">
               {gameId}
             </code>
           </div>
@@ -136,7 +136,7 @@ export default function LobbyOverlay({
           ].map((label) => (
             <span
               key={label}
-              className="rounded-lg border px-2 py-1 text-[9px] uppercase tracking-widest text-[var(--text-muted)] font-[family-name:var(--font-fredoka)] font-medium backdrop-blur-sm"
+              className="rounded-lg border px-2.5 py-1 text-[9px] uppercase tracking-widest text-[var(--text-muted)] font-[family-name:var(--font-fredoka)] font-medium backdrop-blur-sm"
               style={{
                 background: "rgba(28, 24, 20, 0.8)",
                 borderColor: "rgba(255, 184, 0, 0.1)",
@@ -151,23 +151,25 @@ export default function LobbyOverlay({
       {/* Bottom section: Players + Start */}
       <div
         className="pointer-events-auto absolute bottom-3 left-3 space-y-2.5 sm:bottom-5 sm:left-5"
-        style={{ width: "min(24rem, calc(100vw - 1.5rem))" }}
+        style={{ width: "min(22rem, calc(100vw - 1.5rem))" }}
       >
-        <div className="rounded-2xl px-3.5 py-3 sm:px-4 backdrop-blur-md" style={cardStyle}>
-          <div className="flex items-start justify-between gap-4">
+        <div className="rounded-2xl p-4 sm:p-5 backdrop-blur-md" style={cardStyle}>
+          <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
               <p className="text-[10px] uppercase tracking-widest text-[var(--text-muted)] font-[family-name:var(--font-fredoka)] font-semibold">
                 Players
               </p>
-              <p className="mt-1 text-2xl font-[family-name:var(--font-bungee)] text-[var(--text-warm)] leading-none">
-                {players.length}
-                <span className="text-sm text-[var(--text-muted)] font-[family-name:var(--font-fredoka)] font-medium ml-2">
+              <div className="mt-1 flex items-baseline gap-2">
+                <span className="text-3xl font-[family-name:var(--font-bungee)] text-[var(--text-warm)] leading-none">
+                  {players.length}
+                </span>
+                <span className="text-sm text-[var(--text-muted)] font-[family-name:var(--font-fredoka)] font-medium">
                   in room
                 </span>
-              </p>
+              </div>
             </div>
             <div
-              className="shrink-0 rounded-lg border px-2.5 py-1.5 text-right"
+              className="shrink-0 rounded-xl border px-3 py-2 text-right"
               style={{
                 background: "rgba(15, 13, 10, 0.5)",
                 borderColor: "rgba(255, 184, 0, 0.1)",
@@ -176,13 +178,13 @@ export default function LobbyOverlay({
               <p className="text-[9px] uppercase tracking-widest text-[var(--text-dim)] font-[family-name:var(--font-fredoka)]">
                 Arena
               </p>
-              <p className="text-xs text-[var(--text-warm)] font-[family-name:var(--font-fredoka)] font-medium capitalize">
+              <p className="text-xs text-[var(--text-warm)] font-[family-name:var(--font-fredoka)] font-medium capitalize mt-0.5">
                 {mapLabel}
               </p>
             </div>
           </div>
 
-          <div className="mt-3 max-h-[32vh] sm:max-h-[36vh] space-y-1.5 overflow-y-auto pr-1">
+          <div className="mt-4 max-h-[28vh] sm:max-h-[36vh] space-y-2 overflow-y-auto">
             {sortedPlayers.map((p, index) => {
               const isYou = p.id === playerId;
               const isHostPlayer = p.id === gameState.host_id;
@@ -190,7 +192,7 @@ export default function LobbyOverlay({
               return (
                 <div
                   key={p.id}
-                  className="grid grid-cols-[1.75rem,minmax(0,1fr),auto] items-center gap-2 rounded-xl border px-2.5 py-2"
+                  className="flex items-center gap-3 rounded-xl border px-3 py-2.5"
                   style={{
                     background: isYou
                       ? "linear-gradient(135deg, rgba(255,107,44,0.12) 0%, rgba(255,107,44,0.04) 100%)"
@@ -212,18 +214,18 @@ export default function LobbyOverlay({
                   </div>
 
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-[family-name:var(--font-fredoka)] font-medium text-[var(--text-warm)]">
+                    <p className="truncate text-sm font-[family-name:var(--font-fredoka)] font-semibold text-[var(--text-warm)]">
                       {displayName(p)}
                     </p>
-                    <p className="mt-0.5 text-[10px] uppercase tracking-widest text-[var(--text-dim)] font-[family-name:var(--font-fredoka)]">
+                    <p className="text-[9px] uppercase tracking-widest text-[var(--text-dim)] font-[family-name:var(--font-fredoka)] mt-0.5">
                       {isHostPlayer ? "Room host" : "On stage"}
                     </p>
                   </div>
 
-                  <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+                  <div className="flex shrink-0 gap-1.5">
                     {isHostPlayer && (
                       <span
-                        className="rounded-md px-1.5 py-0.5 text-[8px] uppercase tracking-wider font-[family-name:var(--font-fredoka)] font-semibold"
+                        className="rounded-md px-2 py-0.5 text-[8px] uppercase tracking-wider font-[family-name:var(--font-fredoka)] font-semibold"
                         style={{
                           background: "rgba(255,184,0,0.12)",
                           border: "1px solid rgba(255,184,0,0.25)",
@@ -235,7 +237,7 @@ export default function LobbyOverlay({
                     )}
                     {isYou && (
                       <span
-                        className="rounded-md px-1.5 py-0.5 text-[8px] uppercase tracking-wider font-[family-name:var(--font-fredoka)] font-semibold"
+                        className="rounded-md px-2 py-0.5 text-[8px] uppercase tracking-wider font-[family-name:var(--font-fredoka)] font-semibold"
                         style={{
                           background: "rgba(255,107,44,0.12)",
                           border: "1px solid rgba(255,107,44,0.25)",
@@ -264,7 +266,7 @@ export default function LobbyOverlay({
           </button>
         ) : (
           <div
-            className="flex w-full items-center justify-center gap-2.5 rounded-xl px-3 py-3 backdrop-blur-md"
+            className="flex w-full items-center justify-center gap-2.5 rounded-xl px-4 py-3 backdrop-blur-md"
             style={cardStyle}
           >
             <div className="flex gap-1.5">
