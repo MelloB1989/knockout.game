@@ -134,3 +134,12 @@ export interface RematchCreatedPayload {
   game_id: string;
   game_state: GameState;
 }
+
+export interface LiveGame {
+  id: string;
+  player_count: number;
+  map_type: string;
+  current_round: number;
+  started: boolean;
+  created_at: string;
+}

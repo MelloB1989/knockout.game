@@ -107,3 +107,40 @@ func rememberLiveGame(game *Game) {
 }
 
 func gamePubKey(gameId string) string { return fmt.Sprintf("knockout:game:%s:pub", gameId) }
+
+type LiveGameSummary struct {
+	Id          string `json:"id"`
+	PlayerCount int    `json:"player_count"`
+	MapType     string `json:"map_type"`
+	CurrentRound int   `json:"current_round"`
+	Started     bool   `json:"started"`
+	CreatedAt   string `json:"created_at"`
+}
+
+func ListLiveGames() []LiveGameSummary {
+	result := make([]LiveGameSummary, 0)
+	liveGames.Range(func(key, value any) bool {
+		game, ok := value.(*Game)
+		if !ok || game == nil || game.GameState == nil {
+			return true
+		}
+		playerCount := len(game.GameState.Players)
+		if playerCount == 0 {
+			return true
+		}
+		result = append(result, LiveGameSummary{
+			Id:           game.Id,
+			PlayerCount:  playerCount,
+			MapType:      game.GameState.Map.Type,
+			CurrentRound: game.GameState.CurrentRound,
+			Started:      game.GameState.Started,
+			CreatedAt:    game.CreatedAt.Format(time.RFC3339),
+		})
+		return true
+	})
+	return result
+}
+
+func ForgetLiveGame(gameId string) {
+	liveGames.Delete(gameId)
+}

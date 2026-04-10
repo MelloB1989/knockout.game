@@ -31,6 +31,7 @@ func GetRoutes() *fiber.App {
 	gameserviceRoutes.Get("/maps", handlers.GetMapsHandler)
 	gameserviceRoutes.Get("/skins", handlers.GetSkinsHandler)
 	gameserviceRoutes.Get("/latest", handlers.GetLatestGamesHandler)
+	gameserviceRoutes.Get("/live", handlers.GetLiveGamesHandler)
 	gameserviceRoutes.Post("/create", middlewares.IsPlayerVerified, handlers.CreateGameHandler)
 	gameserviceRoutes.Get("/ws/:gameId", middlewares.IsPlayerVerified, websocket.New(handlers.WSHandler))
 
