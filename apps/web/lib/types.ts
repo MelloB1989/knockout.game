@@ -31,6 +31,8 @@ export interface GameMap {
   type: string;
   length: number;
   width: number;
+  original_length?: number;
+  original_width?: number;
   friction: number;
 }
 

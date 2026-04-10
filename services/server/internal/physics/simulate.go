@@ -39,9 +39,11 @@ func CreateGameState(mapType string, l, w int) *GameState {
 	return &GameState{
 		Players: make(map[string]entities.Penguin),
 		Map: entities.Map{
-			Type:   mapType,
-			Length: l,
-			Width:  w,
+			Type:           mapType,
+			Length:         l,
+			Width:          w,
+			OriginalLength: l,
+			OriginalWidth:  w,
 		},
 		CurrentMoves: make(map[string]entities.PenguinMove),
 		CurrentRound: 1,
@@ -462,13 +464,50 @@ func (gs *GameState) shrinkMap() {
 		return
 	}
 
-	newLength := int(math.Floor(float64(oldLength) * 0.9))
-	newWidth := int(math.Floor(float64(oldWidth) * 0.9))
-	if newLength < 1 {
-		newLength = 1
+	// Use original dimensions as reference for proportional shrinking.
+	// Fall back to current dimensions for games created before this field existed.
+	origLength := gs.Map.OriginalLength
+	origWidth := gs.Map.OriginalWidth
+	if origLength <= 0 {
+		origLength = oldLength
 	}
-	if newWidth < 1 {
-		newWidth = 1
+	if origWidth <= 0 {
+		origWidth = oldWidth
+	}
+
+	// Count alive and total players
+	totalPlayers := len(gs.Players)
+	alivePlayers := 0
+	for _, p := range gs.Players {
+		if p.Eliminated == 0 {
+			alivePlayers++
+		}
+	}
+	if totalPlayers <= 1 || alivePlayers <= 0 {
+		return
+	}
+
+	// Map area proportional to alive/total ratio.
+	// sqrt gives a nice curve: dimensions scale as sqrt of player ratio.
+	// This means the map area scales linearly with player count.
+	//   8/8 alive → 1.00x → full size
+	//   6/8 alive → 0.87x → moderate shrink
+	//   4/8 alive → 0.71x → noticeable
+	//   2/8 alive → 0.50x → half size
+	ratio := math.Sqrt(float64(alivePlayers) / float64(totalPlayers))
+	const minRatio = 0.35
+	if ratio < minRatio {
+		ratio = minRatio
+	}
+
+	newLength := int(math.Floor(float64(origLength) * ratio))
+	newWidth := int(math.Floor(float64(origWidth) * ratio))
+	const minDimension = 8
+	if newLength < minDimension {
+		newLength = minDimension
+	}
+	if newWidth < minDimension {
+		newWidth = minDimension
 	}
 
 	if newLength == oldLength && newWidth == oldWidth {
@@ -488,17 +527,18 @@ func (gs *GameState) shrinkMap() {
 		player.Position.X *= scaleX
 		player.Position.Z *= scaleZ
 
-		if player.Position.X < 0 {
-			player.Position.X = 0
+		margin := 1.0
+		if player.Position.X < margin {
+			player.Position.X = margin
 		}
-		if player.Position.X > float64(newLength) {
-			player.Position.X = float64(newLength)
+		if player.Position.X > float64(newLength)-margin {
+			player.Position.X = float64(newLength) - margin
 		}
-		if player.Position.Z < 0 {
-			player.Position.Z = 0
+		if player.Position.Z < margin {
+			player.Position.Z = margin
 		}
-		if player.Position.Z > float64(newWidth) {
-			player.Position.Z = float64(newWidth)
+		if player.Position.Z > float64(newWidth)-margin {
+			player.Position.Z = float64(newWidth) - margin
 		}
 
 		gs.Players[playerId] = player
