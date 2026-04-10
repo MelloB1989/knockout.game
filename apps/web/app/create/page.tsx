@@ -139,6 +139,7 @@ export default function CreatePage() {
   const [maps, setMaps] = useState<MapConfig[]>([]);
   const [selectedMap, setSelectedMap] = useState("");
   const [selectedSkin, setSelectedSkin] = useState(persistedSkin || "default");
+  const [waitTime, setWaitTime] = useState(10);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -169,7 +170,7 @@ export default function CreatePage() {
       const res = await createGame(token, {
         map_type: selectedMap,
         skin: selectedSkin,
-        wait_time_seconds: 10,
+        wait_time_seconds: waitTime,
       });
       persistSelectedSkin(selectedSkin);
       setGameId(res.game_id);
@@ -362,6 +363,37 @@ export default function CreatePage() {
                 </motion.button>
               );
             })}
+          </div>
+        </section>
+
+        {/* Game Settings */}
+        <section>
+          <h2 className="text-lg font-[family-name:var(--font-fredoka)] font-semibold text-[var(--text-warm)] mb-4 flex items-center gap-2">
+            <span className="text-xl">&#9881;&#65039;</span> Game Settings
+          </h2>
+
+          <div className="p-4 rounded-xl border-2 border-[var(--border-warm)] bg-[var(--bg-card)]">
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-sm font-[family-name:var(--font-fredoka)] font-medium text-[var(--text-muted)]">
+                Round Wait Time
+              </label>
+              <span className="text-sm font-[family-name:var(--font-fredoka)] font-semibold text-[var(--text-warm)] bg-white/5 px-2.5 py-0.5 rounded-md">
+                {waitTime}s
+              </span>
+            </div>
+            <input
+              type="range"
+              min={5}
+              max={30}
+              step={1}
+              value={waitTime}
+              onChange={(e) => setWaitTime(Number(e.target.value))}
+              className="w-full accent-[var(--accent-orange)] cursor-pointer"
+            />
+            <div className="flex justify-between mt-1">
+              <span className="text-[10px] text-[var(--text-dim)] font-mono">5s</span>
+              <span className="text-[10px] text-[var(--text-dim)] font-mono">30s</span>
+            </div>
           </div>
         </section>
 
