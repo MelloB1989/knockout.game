@@ -19,6 +19,7 @@ import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator.
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder.js";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode.js";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial.js";
+import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture.js";
 import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader.js";
 import { Mesh } from "@babylonjs/core/Meshes/mesh.js";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData.js";
@@ -99,6 +100,7 @@ interface PenguinTracker {
   root: TransformNode;
   meshes: AbstractMesh[];
   arrow: Mesh;
+  nameplate: Mesh;
   interpFrom: Vector3;
   interpTo: Vector3;
   interpT: number;
@@ -200,8 +202,81 @@ function createArrowMesh(scene: Scene, name: string, color: Color3): Mesh {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Scene builder — all Babylon.js logic lives here                   */
+/*  Build a nameplate billboard (DynamicTexture on a plane)            */
 /* ------------------------------------------------------------------ */
+function penguinDisplayName(penguin: import("@/lib/types").Penguin): string {
+  if (penguin.username) return penguin.username;
+  if (penguin.id.startsWith("anonymous_")) return penguin.id.slice(10);
+  return penguin.id;
+}
+
+function createNameplate(
+  scene: Scene,
+  name: string,
+  displayText: string,
+  isCurrentPlayer: boolean,
+): Mesh {
+  const texWidth = 512;
+  const texHeight = 96;
+
+  const texture = new DynamicTexture(`${name}_tex`, { width: texWidth, height: texHeight }, scene, false);
+  texture.hasAlpha = true;
+
+  const ctx = texture.getContext() as unknown as CanvasRenderingContext2D;
+  ctx.clearRect(0, 0, texWidth, texHeight);
+
+  // Draw rounded background
+  const bgHeight = 56;
+  const bgY = (texHeight - bgHeight) / 2;
+  const radius = bgHeight / 2;
+
+  // Measure text to size background
+  ctx.font = "bold 34px Arial, sans-serif";
+  const textMetrics = ctx.measureText(displayText);
+  const textWidth = textMetrics.width;
+  const bgWidth = Math.min(texWidth - 40, textWidth + 50);
+  const bgX = (texWidth - bgWidth) / 2;
+
+  // Draw rounded rect manually for compatibility
+  ctx.beginPath();
+  ctx.moveTo(bgX + radius, bgY);
+  ctx.lineTo(bgX + bgWidth - radius, bgY);
+  ctx.arc(bgX + bgWidth - radius, bgY + radius, radius, -Math.PI / 2, Math.PI / 2);
+  ctx.lineTo(bgX + radius, bgY + bgHeight);
+  ctx.arc(bgX + radius, bgY + radius, radius, Math.PI / 2, -Math.PI / 2);
+  ctx.closePath();
+  ctx.fillStyle = isCurrentPlayer
+    ? "rgba(0, 180, 255, 0.7)"
+    : "rgba(0, 0, 0, 0.65)";
+  ctx.fill();
+
+  // Draw text
+  ctx.font = "bold 34px Arial, sans-serif";
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(displayText, texWidth / 2, texHeight / 2, bgWidth - 20);
+
+  texture.update();
+
+  // Create plane mesh
+  const planeWidth = 3.0;
+  const planeHeight = planeWidth * (texHeight / texWidth);
+  const plane = MeshBuilder.CreatePlane(`${name}_plane`, { width: planeWidth, height: planeHeight }, scene);
+  plane.position.y = 3.8;
+  plane.billboardMode = 7; // BILLBOARDMODE_ALL
+
+  const mat = new StandardMaterial(`${name}_mat`, scene);
+  mat.diffuseTexture = texture;
+  mat.emissiveTexture = texture;
+  mat.opacityTexture = texture;
+  mat.disableLighting = true;
+  mat.backFaceCulling = false;
+  plane.material = mat;
+  plane.isPickable = false;
+
+  return plane;
+}
 class GameScene {
   engine: Engine;
   scene: Scene;
@@ -794,6 +869,11 @@ class GameScene {
         ring.isPickable = false;
       }
 
+      // Nameplate billboard
+      const displayText = penguinDisplayName(penguin);
+      const nameplate = createNameplate(this.scene, `nameplate_${id}`, displayText, isCurrentPlayer);
+      nameplate.parent = root;
+
       const rad = (penguin.direction * Math.PI) / 180;
       const initRotY = -rad + Math.PI / 2;
 
@@ -801,6 +881,7 @@ class GameScene {
         root,
         meshes: clonedMeshes,
         arrow,
+        nameplate,
         interpFrom: worldPosition.clone(),
         interpTo: worldPosition.clone(),
         interpT: 1,
@@ -1321,11 +1402,17 @@ class GameScene {
     arrow.parent = root;
     arrow.setEnabled(false);
 
+    // Nameplate billboard
+    const displayText = penguinDisplayName(penguin);
+    const nameplate = createNameplate(this.scene, `nameplate_${id}`, displayText, isCurrentPlayer);
+    nameplate.parent = root;
+
     const rad = (penguin.direction * Math.PI) / 180;
     this.penguins.set(id, {
       root,
       meshes: clonedMeshes,
       arrow,
+      nameplate,
       interpFrom: worldPosition.clone(),
       interpTo: worldPosition.clone(),
       interpT: 1,

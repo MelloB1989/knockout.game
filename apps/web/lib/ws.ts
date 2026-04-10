@@ -19,6 +19,7 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
 let intentionalClose = false;
 let pendingPlayAgain = false;
+let spectateMode = false;
 let positionApplyTimer: ReturnType<typeof setTimeout> | null = null;
 let positionQueue: GameState[] = [];
 let playbackClockOffsetMs: number | null = null;
@@ -132,9 +133,10 @@ function getWsBase() {
   return base;
 }
 
-export function connectToGame(gameId: string, token: string) {
+export function connectToGame(gameId: string, token: string, spectate = false) {
   resetPositionPlayback();
   pendingPlayAgain = false;
+  spectateMode = spectate;
 
   // Close any existing connection cleanly
   if (ws) {
@@ -156,6 +158,11 @@ export function connectToGame(gameId: string, token: string) {
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
+    }
+    if (spectateMode) {
+      // In spectate mode, don't register as player.
+      // Game state will arrive via subscription events.
+      return;
     }
     // If we have a pending registration, send it now then request state
     if (pendingRegistration) {

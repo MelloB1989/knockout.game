@@ -1256,6 +1256,7 @@ func startGameLoop(gameId string) {
 					_ = game.PublishEvent(repository.GameEnded, struct {
 						WinnerId string `json:"winner_id,omitempty"`
 					}{WinnerId: winnerId}, game.GameState)
+					repository.ForgetLiveGame(gameId)
 					endLoop = true
 					return
 				}

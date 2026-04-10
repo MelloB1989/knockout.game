@@ -84,7 +84,8 @@ export default function GamesPage() {
     return () => clearInterval(id);
   }, [fetchData]);
 
-  const activeLive = liveGames.filter((g) => g.player_count > 0);
+  const pastGameIds = new Set(pastGames.map((g) => g.id));
+  const activeLive = liveGames.filter((g) => g.player_count > 0 && !pastGameIds.has(g.id));
   const totalPlayers = activeLive.reduce((s, g) => s + g.player_count, 0);
 
   return (
@@ -113,12 +114,6 @@ export default function GamesPage() {
               className="game-btn-secondary px-4 py-2 text-xs sm:text-sm font-[family-name:var(--font-fredoka)] rounded-xl"
             >
               Home
-            </Link>
-            <Link
-              href="/create"
-              className="game-btn-primary px-4 py-2 text-xs sm:text-sm font-[family-name:var(--font-fredoka)] rounded-xl"
-            >
-              Create Game
             </Link>
           </div>
         </div>
@@ -180,7 +175,7 @@ export default function GamesPage() {
                 return (
                   <Link
                     key={game.id}
-                    href={`/game/${game.id}`}
+                    href={game.started ? `/game/${game.id}?spectate=true` : `/game/${game.id}`}
                     className="group rounded-2xl overflow-hidden transition-all hover:scale-[1.015]"
                     style={{
                       background: "linear-gradient(180deg, rgba(28,24,20,0.95) 0%, rgba(15,13,10,0.98) 100%)",
@@ -300,7 +295,7 @@ export default function GamesPage() {
                 Complete a match to see results here
               </p>
               <Link
-                href="/create"
+                href="/"
                 className="game-btn-primary inline-block mt-5 px-8 py-3 text-sm font-[family-name:var(--font-fredoka)] rounded-xl"
               >
                 Play Now
