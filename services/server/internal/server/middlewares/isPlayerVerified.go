@@ -66,6 +66,7 @@ func IsPlayerVerified(c *fiber.Ctx) error {
 		c.Locals("exp", time.Unix(claims.ExpiresAt, 0))
 		c.Locals("secret", claims.PlayerSecret)
 		c.Locals("pfp", claims.Pfp)
+		c.Locals("username", claims.Username)
 
 		analyticsClient := anal.CreateAnalytics(claims.Username)
 		analyticsClient.SetProperty(anal.USER_ID, claims.PlayerId)
@@ -113,6 +114,14 @@ func GetPlayerSecretWS(c *websocket.Conn) string {
 		return ""
 	}
 	return secret
+}
+
+func GetPlayerUsernameWS(c *websocket.Conn) string {
+	username, ok := c.Locals("username").(string)
+	if !ok {
+		return ""
+	}
+	return username
 }
 
 func GetPlayerPfp(c *fiber.Ctx) string {

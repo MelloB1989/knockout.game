@@ -5,6 +5,7 @@ export interface Position {
 
 export interface Penguin {
   id: string;
+  username?: string;
   player_secret?: string;
   type: "anonymous" | "registered";
   skin: string;
@@ -56,6 +57,7 @@ export interface MapConfig {
 
 export interface GameResultPlayerScore {
   player_id: string;
+  username?: string;
   score: number;
   eliminated_round: number;
 }

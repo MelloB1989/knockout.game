@@ -237,6 +237,7 @@ func WSHandler(c *websocket.Conn) {
 		}
 	}()
 	playerId, playerSecret, gameId := middlewares.GetPlayerIdWS(c), middlewares.GetPlayerSecretWS(c), c.Params("gameId")
+	playerUsername := middlewares.GetPlayerUsernameWS(c)
 	done := make(chan struct{})
 	var closeOnce sync.Once
 	closeConn := func() {
@@ -514,6 +515,7 @@ func WSHandler(c *websocket.Conn) {
 				if playerId != "" {
 					player.Id = playerId
 				}
+				player.Username = playerUsername
 				if existing, ok := game.GameState.Players[player.Id]; ok && existing.PlayerSecret != "" && existing.PlayerSecret != playerSecret {
 					writeJSON(outgoing{
 						Event: repository.ErrorEvent,
@@ -523,6 +525,9 @@ func WSHandler(c *websocket.Conn) {
 				}
 				if existing, ok := game.GameState.Players[player.Id]; ok {
 					existing.PlayerSecret = playerSecret
+					if playerUsername != "" {
+						existing.Username = playerUsername
+					}
 					if player.Skin != "" && !game.GameState.Started {
 						existing.Skin = player.Skin
 					}
@@ -1125,6 +1130,7 @@ func persistGameResult(game *repository.Game) {
 	for _, player := range game.GameState.Players {
 		playerScores = append(playerScores, repository.PlayerScore{
 			PlayerId:        player.Id,
+			Username:        player.Username,
 			Score:           float64(player.Score),
 			EliminatedRound: player.Eliminated,
 		})

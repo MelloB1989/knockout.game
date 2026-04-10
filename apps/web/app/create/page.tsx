@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import { useAuthStore } from "@/lib/auth-store";
 import { useGameStore } from "@/lib/game-store";
 import { createGame, getMaps } from "@/lib/api";
@@ -210,11 +211,12 @@ export default function CreatePage() {
             onClick={() => router.push("/")}
             className="text-[var(--text-dim)] hover:text-[var(--text-warm)] transition-colors text-sm font-[family-name:var(--font-fredoka)] font-medium flex items-center gap-1.5"
           >
-            <span className="text-lg">&larr;</span> Back
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M19 12H5M12 19l-7-7 7-7"/>
+            </svg>
+            Back
           </button>
-          <h1 className="text-2xl font-[family-name:var(--font-bungee)] text-gradient-warm">
-            KNOCKOUT
-          </h1>
+          <Image src="/logo.png" alt="Knockout" width={200} height={40} className="h-8 sm:h-10 w-auto" />
         </div>
 
         {/* Penguin Selection */}
@@ -367,7 +369,7 @@ export default function CreatePage() {
         <button
           onClick={handleCreate}
           disabled={loading || !selectedMap}
-          className="game-btn-primary w-full font-[family-name:var(--font-fredoka)] text-xl"
+          className="game-btn-primary w-full font-[family-name:var(--font-fredoka)] text-xl rounded-xl"
         >
           {loading ? "Creating..." : "Create & Enter Lobby"}
         </button>

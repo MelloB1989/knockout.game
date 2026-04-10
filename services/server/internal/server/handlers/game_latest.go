@@ -21,5 +21,9 @@ func GetLatestGamesHandler(c *fiber.Ctx) error {
 		})
 	}
 
+	if games == nil {
+		games = make([]repository.Games, 0)
+	}
+
 	return c.JSON(games)
 }

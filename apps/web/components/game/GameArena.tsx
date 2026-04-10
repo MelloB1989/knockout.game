@@ -4,6 +4,7 @@ import { useRef, useEffect, useState, Component, type ReactNode } from "react";
 import { useGameStore } from "@/lib/game-store";
 import { skinToGlb, mapToEnvironmentGlb } from "@/lib/constants";
 import { registerMove, sendPosition } from "@/lib/ws";
+import { mobileInput } from "@/lib/mobile-input";
 
 /* ------------------------------------------------------------------ */
 /*  Babylon.js imports (tree-shakeable ES6)                           */
@@ -962,6 +963,12 @@ class GameScene {
       if (this.lobbyKeys.a) {
         moveX -= rightX;
         moveZ -= rightZ;
+      }
+
+      // Mobile joystick input
+      if (mobileInput.active) {
+        moveX += fwdX * (-mobileInput.moveZ) + rightX * mobileInput.moveX;
+        moveZ += fwdZ * (-mobileInput.moveZ) + rightZ * mobileInput.moveX;
       }
 
       const len = Math.hypot(moveX, moveZ);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, use, useMemo } from "react";
+import { useEffect, useRef, use, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import { useAuthStore } from "@/lib/auth-store";
@@ -17,13 +17,25 @@ import GameControls from "@/components/game/GameControls";
 import GameHUD from "@/components/game/GameHUD";
 import LobbyOverlay from "@/components/game/LobbyOverlay";
 import GameOverOverlay from "@/components/game/GameOverOverlay";
+import MobileJoystick from "@/components/game/MobileJoystick";
 
 // Dynamic import for Three.js canvas (no SSR)
 const GameArena = dynamic(() => import("@/components/game/GameArena"), {
   ssr: false,
   loading: () => (
     <div className="w-full h-full flex items-center justify-center bg-[var(--bg-primary)]">
-      <div className="text-[var(--text-dim)] text-sm font-[family-name:var(--font-fredoka)]">Loading 3D arena...</div>
+      <div className="flex flex-col items-center gap-3">
+        <div className="flex gap-1.5">
+          {[0, 1, 2].map((i) => (
+            <div
+              key={i}
+              className="w-3 h-3 rounded-full bg-[var(--accent-orange)] animate-pulse"
+              style={{ animationDelay: `${i * 0.2}s` }}
+            />
+          ))}
+        </div>
+        <div className="text-[var(--text-muted)] text-sm font-[family-name:var(--font-fredoka)]">Loading 3D arena...</div>
+      </div>
     </div>
   ),
 });
@@ -57,6 +69,12 @@ export default function GamePage({
   const rejoinRetryRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryCountRef = useRef(0);
+
+  // Detect touch device for mobile joystick
+  const [isTouchDevice, setIsTouchDevice] = useState(false);
+  useEffect(() => {
+    setIsTouchDevice("ontouchstart" in window || navigator.maxTouchPoints > 0);
+  }, []);
 
   const queuedSkin = useMemo(
     () => selectedSkin || "default",
@@ -186,6 +204,14 @@ export default function GamePage({
 
   const showRestoreOverlay = !hasHydrated || !isReady || phase === "idle";
 
+  // Show mobile joystick when player can walk on stage
+  const currentPlayer = playerId ? gameState?.players[playerId] : undefined;
+  const showJoystick =
+    isTouchDevice &&
+    !!currentPlayer &&
+    currentPlayer.zone === "stage" &&
+    (phase === "lobby" || currentPlayer.eliminated > 0);
+
   return (
     <div className="fixed inset-0 bg-[var(--bg-primary)]">
       {showRestoreOverlay && (
@@ -193,7 +219,7 @@ export default function GamePage({
           <div className="text-2xl font-bold text-[var(--text-warm)] mb-3 font-[family-name:var(--font-fredoka)]">
             {hasHydrated && isReady ? "Restoring match..." : "Restoring session..."}
           </div>
-          <div className="text-sm text-[var(--text-dim)] mb-4 font-[family-name:var(--font-geist-sans)]">
+          <div className="text-sm text-[var(--text-dim)] mb-4 font-[family-name:var(--font-fredoka)]">
             Rejoining game {gameId}
           </div>
           <div className="flex gap-1.5">
@@ -216,6 +242,9 @@ export default function GamePage({
 
       {/* Controls overlay (during countdown phase) */}
       <GameControls />
+
+      {/* Mobile joystick */}
+      <MobileJoystick visible={showJoystick} />
 
       {/* Lobby overlay */}
       {phase === "lobby" && (

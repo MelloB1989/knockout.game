@@ -8,6 +8,7 @@ import (
 
 type PlayerScore struct {
 	PlayerId        string  `json:"player_id"`
+	Username        string  `json:"username,omitempty"`
 	Score           float64 `json:"score"`
 	EliminatedRound int     `json:"eliminated_round"`
 }
@@ -38,7 +39,7 @@ func GetLatestGames(limit int) ([]Games, error) {
 		limit = 50
 	}
 
-	var games []Games
+	games := make([]Games, 0)
 	query := "SELECT * FROM games ORDER BY played_at DESC LIMIT $1"
 	if err := gamesORM.QueryRaw(query, limit).Scan(&games); err != nil {
 		return nil, err

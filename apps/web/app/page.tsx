@@ -2,6 +2,8 @@
 
 import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
+import Image from "next/image";
 import { useAuthStore } from "@/lib/auth-store";
 import { motion } from "framer-motion";
 
@@ -107,43 +109,34 @@ export default function Home() {
 
       {/* Content */}
       <motion.div
-        className="relative z-10 flex flex-col items-center gap-10 px-4"
+        className="relative z-10 flex flex-col items-center gap-8 sm:gap-10 px-4 w-full max-w-md"
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6, ease: "easeOut" }}
       >
-        {/* Penguin decorations */}
+        {/* Logo */}
         <motion.div
-          className="flex gap-3 text-4xl select-none"
-          initial={{ opacity: 0, scale: 0.5 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.2, duration: 0.5, type: "spring", bounce: 0.5 }}
-        >
-          <span className="animate-bounce" style={{ animationDelay: "0s", animationDuration: "2s" }}>🐧</span>
-          <span className="animate-bounce" style={{ animationDelay: "0.3s", animationDuration: "2.2s" }}>🐧</span>
-          <span className="animate-bounce" style={{ animationDelay: "0.6s", animationDuration: "1.8s" }}>🐧</span>
-        </motion.div>
-
-        {/* Title */}
-        <motion.div
-          className="text-center"
+          className="w-full max-w-[20rem] sm:max-w-[28rem]"
           initial={{ opacity: 0, scale: 0.8 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.1, duration: 0.5, type: "spring", bounce: 0.3 }}
         >
-          <h1
-            className="text-8xl sm:text-9xl font-[family-name:var(--font-bungee)] text-gradient-warm title-3d leading-none"
-          >
-            KNOCKOUT
-          </h1>
-          <p className="text-sm sm:text-base text-[var(--text-muted)] mt-3 font-[family-name:var(--font-fredoka)] font-medium tracking-[0.25em] uppercase">
+          <Image
+            src="/logo.png"
+            alt="Knockout"
+            width={800}
+            height={160}
+            className="w-full h-auto"
+            priority
+          />
+          <p className="text-xs sm:text-sm text-[var(--text-muted)] mt-2 font-[family-name:var(--font-fredoka)] font-medium tracking-[0.25em] uppercase text-center">
             Penguin Battle Royale
           </p>
         </motion.div>
 
         {/* Name input */}
         <motion.div
-          className="w-full max-w-sm"
+          className="w-full"
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.3, duration: 0.4 }}
@@ -163,17 +156,22 @@ export default function Home() {
             <button
               type="button"
               onClick={() => setUsername(randomName())}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-xl hover:scale-110 active:scale-95 transition-transform"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-base sm:text-xl hover:scale-110 active:scale-95 transition-transform"
               title="Random name"
             >
-              🎲
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent-gold)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+                <path d="M21 3v5h-5" />
+                <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+                <path d="M3 21v-5h5" />
+              </svg>
             </button>
           </div>
         </motion.div>
 
         {/* Action buttons */}
         <motion.div
-          className="flex flex-col sm:flex-row gap-4 w-full max-w-sm"
+          className="flex flex-col sm:flex-row gap-3 sm:gap-4 w-full"
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.45, duration: 0.4 }}
@@ -181,7 +179,7 @@ export default function Home() {
           <button
             onClick={handleCreate}
             disabled={loading || !username.trim()}
-            className="game-btn-primary flex-1 font-[family-name:var(--font-fredoka)]"
+            className="game-btn-primary flex-1 font-[family-name:var(--font-fredoka)] rounded-xl"
           >
             {loading ? "Connecting..." : "Create Game"}
           </button>
@@ -189,7 +187,7 @@ export default function Home() {
           <button
             onClick={handleJoin}
             disabled={loading || !username.trim()}
-            className="game-btn-secondary flex-1 font-[family-name:var(--font-fredoka)]"
+            className="game-btn-secondary flex-1 font-[family-name:var(--font-fredoka)] rounded-xl"
           >
             {loading ? "Connecting..." : "Join Game"}
           </button>
@@ -197,7 +195,7 @@ export default function Home() {
 
         {error && (
           <motion.p
-            className="text-[var(--accent-red)] text-sm font-medium"
+            className="text-[var(--accent-red)] text-sm font-medium font-[family-name:var(--font-fredoka)]"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
           >
@@ -206,14 +204,23 @@ export default function Home() {
         )}
 
         {/* Footer */}
-        <motion.p
-          className="text-[var(--text-dim)] text-xs mt-4"
+        <motion.div
+          className="flex items-center gap-4"
           initial={{ opacity: 0 }}
           animate={{ opacity: 0.6 }}
           transition={{ delay: 0.8 }}
         >
-          Last penguin standing wins
-        </motion.p>
+          <Link
+            href="/games"
+            className="text-[var(--text-dim)] text-xs hover:text-[var(--accent-gold)] transition-colors font-[family-name:var(--font-fredoka)]"
+          >
+            Match History
+          </Link>
+          <span className="text-[var(--text-dim)] text-xs">|</span>
+          <p className="text-[var(--text-dim)] text-xs font-[family-name:var(--font-fredoka)]">
+            Last penguin standing wins
+          </p>
+        </motion.div>
       </motion.div>
     </main>
   );

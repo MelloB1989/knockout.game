@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import { useAuthStore } from "@/lib/auth-store";
 import { useGameStore } from "@/lib/game-store";
 import { ALL_SKINS } from "@/lib/constants";
@@ -82,11 +83,12 @@ export default function JoinPage() {
             onClick={() => router.push("/")}
             className="text-[var(--text-dim)] hover:text-[var(--text-warm)] transition-colors text-sm font-[family-name:var(--font-fredoka)] font-medium flex items-center gap-1.5"
           >
-            <span className="text-lg">&larr;</span> Back
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M19 12H5M12 19l-7-7 7-7"/>
+            </svg>
+            Back
           </button>
-          <h1 className="text-2xl font-[family-name:var(--font-bungee)] text-gradient-warm">
-            KNOCKOUT
-          </h1>
+          <Image src="/logo.png" alt="Knockout" width={200} height={40} className="h-8 sm:h-10 w-auto" />
         </div>
 
         <h2 className="text-3xl font-[family-name:var(--font-fredoka)] font-bold text-[var(--text-warm)]">
@@ -187,7 +189,7 @@ export default function JoinPage() {
         <button
           onClick={handleJoin}
           disabled={!gameCode.trim()}
-          className="game-btn-green w-full font-[family-name:var(--font-fredoka)] text-xl"
+          className="game-btn-green w-full font-[family-name:var(--font-fredoka)] text-xl rounded-xl"
         >
           Join Game
         </button>

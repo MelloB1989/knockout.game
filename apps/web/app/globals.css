@@ -40,7 +40,7 @@ html, body {
   color: white;
   font-weight: 800;
   border: none;
-  border-radius: 1rem;
+  border-radius: 0.875rem;
   padding: 1.1rem 2rem;
   font-size: 1.125rem;
   cursor: pointer;
@@ -161,6 +161,18 @@ html, body {
   15% { opacity: 0.8; }
   85% { opacity: 0.6; }
   100% { transform: translateY(-100vh) scale(0.2); opacity: 0; }
+}
+
+/* ── Elimination bounce-in ── */
+@keyframes bounce-in {
+  0% { transform: scale(0.3); opacity: 0; }
+  50% { transform: scale(1.08); opacity: 1; }
+  70% { transform: scale(0.95); }
+  100% { transform: scale(1); }
+}
+
+.animate-bounce-in {
+  animation: bounce-in 0.5s cubic-bezier(0.68, -0.55, 0.27, 1.55);
 }
 
 /* ── Gradient text helper ── */
